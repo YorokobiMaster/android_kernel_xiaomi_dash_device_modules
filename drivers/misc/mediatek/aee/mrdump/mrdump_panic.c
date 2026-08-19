@@ -43,6 +43,15 @@ static void aee_exception_reboot(int reboot_reason)
 	struct arm_smccc_res res;
 	int opt1 = 0, opt2 = 0;
 
+	/* DASH-DEBUG: suppress the immediate vendor reset2 so panic()/die()
+	 * continues to kmsg_dump and an orderly restart, leaving pstore
+	 * (ramoops) and other log state intact across a normal warm reset.
+	 * Revert before any release build.
+	 */
+	pr_notice("aee_exception_reboot: reset2 SUPPRESSED (dash debug), reason %d\n",
+		  reboot_reason);
+	return;
+
 	if (reboot_reason == AEE_REBOOT_MODE_HANG_DETECT)
 		opt1 |= ((unsigned char)AEE_EXP_TYPE_HANG_DETECT) << RESET2_TYPE_DOMAIN_USAGE_SHIFT;
 	else if (reboot_reason == AEE_REBOOT_MODE_WDT)
