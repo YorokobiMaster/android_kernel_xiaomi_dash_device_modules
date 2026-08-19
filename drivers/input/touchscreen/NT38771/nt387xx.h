@@ -209,6 +209,9 @@ enum NVT_GESTURE_TYP {
 /*P16 code for HQFEAT-88981 by liaoxianguo at 2025/4/8 end*/
 struct nvt_ts_data {
 	struct spi_device *client;
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *pinctrl_active;
+	struct pinctrl_state *pinctrl_suspend;
 	struct input_dev *input_dev;
 	struct delayed_work nvt_fwu_work;
 	uint16_t addr;

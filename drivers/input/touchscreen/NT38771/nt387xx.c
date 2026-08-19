@@ -25,6 +25,7 @@
 #include <linux/of_gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/of_irq.h>
+#include <linux/pinctrl/consumer.h>
 /*P16 code for HQFEAT-89815 by liaoxianguo at 2025/4/1 start*/
 #include <uapi/linux/sched/types.h>
 /*P16 code for HQFEAT-89815 by liaoxianguo at 2025/4/1 end*/
@@ -1640,6 +1641,36 @@ err_request_reset_gpio:
 	return ret;
 }
 
+static int nvt_pinctrl_init(struct nvt_ts_data *ts)
+{
+	struct device *dev = &ts->client->dev;
+	int ret;
+
+	ts->pinctrl = devm_pinctrl_get(dev);
+	if (IS_ERR(ts->pinctrl)) {
+		ret = PTR_ERR(ts->pinctrl);
+		return dev_err_probe(dev, ret, "failed to get pinctrl\n");
+	}
+
+	ts->pinctrl_active = pinctrl_lookup_state(ts->pinctrl,
+						  "pmx_ts_active");
+	if (IS_ERR(ts->pinctrl_active)) {
+		ret = PTR_ERR(ts->pinctrl_active);
+		return dev_err_probe(dev, ret,
+				     "failed to lookup pmx_ts_active\n");
+	}
+
+	ts->pinctrl_suspend = pinctrl_lookup_state(ts->pinctrl,
+						   "pmx_ts_suspend");
+	if (IS_ERR(ts->pinctrl_suspend)) {
+		ret = PTR_ERR(ts->pinctrl_suspend);
+		return dev_err_probe(dev, ret,
+				     "failed to lookup pmx_ts_suspend\n");
+	}
+
+	return 0;
+}
+
 /*******************************************************
 Description:
 	Novatek touchscreen deconfig gpio
@@ -1824,6 +1855,7 @@ void nvt_read_fw_history_all(void) {
 static int nvt_enable_gesture_mode(int value)
 {
 	int32_t ret = 0;
+	int32_t pinctrl_ret;
 	uint8_t doubletap_enable = 0;
 	uint8_t singletap_enable = 0;
 	uint8_t fod_enable = 0;
@@ -1859,6 +1891,11 @@ static int nvt_enable_gesture_mode(int value)
 		if (ret < 0) {
 			NVT_ERR("set cmd failed!\n");
 		}
+		pinctrl_ret = pinctrl_select_state(ts->pinctrl,
+						     ts->pinctrl_suspend);
+		if (pinctrl_ret)
+			return dev_err_probe(&ts->client->dev, pinctrl_ret,
+					     "failed to select pmx_ts_suspend\n");
 		NVT_LOG("Enter deep sleep mode\n");
 	}
 
@@ -3475,6 +3512,17 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		goto err_spi_setup;
 	}
 
+	ret = nvt_pinctrl_init(ts);
+	if (ret)
+		goto err_spi_setup;
+
+	ret = pinctrl_select_state(ts->pinctrl, ts->pinctrl_active);
+	if (ret) {
+		ret = dev_err_probe(&client->dev, ret,
+				    "failed to select pmx_ts_active\n");
+		goto err_spi_setup;
+	}
+
 	//---request and config GPIOs---
 	ret = nvt_gpio_config(ts);
 	if (ret) {
@@ -4332,6 +4380,7 @@ return:
 *******************************************************/
 static int32_t nvt_ts_resume(struct device *dev)
 {
+	int32_t ret;
 /*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 start*/
 	ts->nvt_tool_in_use = false;
 /*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 end*/
@@ -4351,6 +4400,15 @@ static int32_t nvt_ts_resume(struct device *dev)
 	mutex_lock(&ts->lock);
 
 	NVT_LOG("start\n");
+
+	if (!ts->gesture_command) {
+		ret = pinctrl_select_state(ts->pinctrl, ts->pinctrl_active);
+		if (ret) {
+			mutex_unlock(&ts->lock);
+			return dev_err_probe(&ts->client->dev, ret,
+					     "failed to select pmx_ts_active\n");
+		}
+	}
 
 	// please make sure display reset(RESX) sequence and mipi dsi cmds sent before this
 #if NVT_TOUCH_SUPPORT_HW_RST
