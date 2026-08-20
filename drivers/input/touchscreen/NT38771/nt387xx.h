@@ -100,7 +100,7 @@
 #define NVT_PEN_NAME "NVTCapacitivePen"
 /*P16 code for BUGP16-6610 by P-liaoxianguo at 2025/6/24 start*/
 #define NVT_SUPER_RESOLUTION 1 //enable/disable super resolution
-#define SUPER_RESOLUTION_FACOTR 16
+#define SUPER_RESOLUTION_FACOTR 100
 
 #if NVT_SUPER_RESOLUTION
 #define NVT_DRIVER_INSERT_FRAME 1 //enable/disable insert frame
@@ -257,7 +257,10 @@ struct nvt_ts_data {
 	uint16_t nvt_pid;
 	uint8_t *rbuf;
 	uint8_t *xbuf;
+	uint8_t *thp_frame_buf;
+	u64 thp_frame_count;
 	struct mutex xbuf_lock;
+	bool touch_panel_registered;
 	bool irq_enabled;
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 start */
 	struct work_struct power_supply_work;

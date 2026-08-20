@@ -61,5 +61,7 @@ source "$(KCONFIG_EXT_PREFIX)drivers/input/touchscreen/ILITEK/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/input/touchscreen/synaptics_dsx_96789/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/input/touchscreen/synaptics_dsx_96851/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/input/touchscreen/NT36532/Kconfig"
+source "$(KCONFIG_EXT_PREFIX)drivers/input/touchscreen/NT38771/Kconfig"
+source "$(KCONFIG_EXT_PREFIX)drivers/input/touchscreen/xiaomi_touch/Kconfig"
 
 endif

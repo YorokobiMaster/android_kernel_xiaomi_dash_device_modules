@@ -26,6 +26,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/of_irq.h>
 #include <linux/pinctrl/consumer.h>
+#include <asm/unaligned.h>
 /*P16 code for HQFEAT-89815 by liaoxianguo at 2025/4/1 start*/
 #include <uapi/linux/sched/types.h>
 /*P16 code for HQFEAT-89815 by liaoxianguo at 2025/4/1 end*/
@@ -62,6 +63,9 @@ extern void dsi_panel_gesture_enable(bool enable);
 /* P16 code for HQFEAT-89651 by liaoxianguo at 2025/3/24 end */
 /*P16 code for HQFEAT-94426 by liuyupei at 2025/5/6 start*/
 #define NVT_VENDOR_TOUCH_IC '4'
+#define NVT_THP_DATA_LEN 0x1EFE
+#define NVT_THP_SPI_READ_LEN (NVT_THP_DATA_LEN + 0x101)
+#define NVT_THP_FRAME_BUF_LEN 0x2000
 char hex_str[3];
 /*P16 code for HQFEAT-94426 by liuyupei at 2025/5/6 end*/
 #if NVT_TOUCH_ESD_PROTECT
@@ -99,6 +103,13 @@ extern void mi_display_gesture_callback_register(void (*cb)(void));
 /*P16 code for HQFEAT-89614 by liaoxianguo at 2025/4/3 end*/
 
 struct nvt_ts_data *ts;
+struct nvt_thp_frame {
+	u64 timestamp_ns;
+	u64 frame_count;
+	u32 frame_type;
+	u32 status;
+	u8 tp_raw[];
+} __packed;
 /*P16 code for HQFEAT-88864 by xiongdejun at 2025/4/2 start*/
 uint8_t edge_orientation_store = 1;
 /*P16 code for HQFEAT-88864 by xiongdejun at 2025/4/2 end*/
@@ -2161,6 +2172,72 @@ enum hrtimer_restart nvt_hrtimer_callback(struct hrtimer *timer)
 #define FINGER_FOD_DOWN 0x03
 #define FINGER_FOD_UP 0x04
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+static bool nvt_thp_frame_is_valid(const u8 *data)
+{
+	u32 data_len = get_unaligned_le32(data + 0x109);
+	u16 data_crc = get_unaligned_le16(data + 0x10D);
+	u16 expected_crc = get_unaligned_le16(data + 0x105) ^ 0xFFFF;
+	u32 inverted_len = get_unaligned_le32(data + 0x111);
+
+	return ((data_len == 0x509 || data_len == 0x1FB) &&
+		data_crc == expected_crc && inverted_len == ~data_len) ||
+		get_unaligned_le16(data + 0x101) == 0xFFFF;
+}
+
+static int nvt_report_thp_frame(void)
+{
+	struct nvt_thp_frame *frame;
+	int ret;
+
+	memset(ts->thp_frame_buf, 0, NVT_THP_FRAME_BUF_LEN);
+	ret = CTP_SPI_READ(ts->client, ts->thp_frame_buf,
+			   NVT_THP_SPI_READ_LEN);
+	if (ret < 0)
+		return ret;
+
+#if NVT_TOUCH_WDT_RECOVERY
+	if (nvt_wdt_fw_recovery(ts->thp_frame_buf)) {
+		NVT_ERR("Recover for fw reset, %02X\n", ts->thp_frame_buf[1]);
+		if (ts->thp_frame_buf[1] == 0xFE) {
+			nvt_sw_reset_idle();
+			nvt_clear_aci_error_flag();
+		}
+		nvt_read_fw_history_all();
+		nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+		nvt_read_fw_history_all();
+		nvt_fw_reload_recovery();
+		return -EAGAIN;
+	}
+#endif
+
+#if WAKEUP_GESTURE
+	if (!bTouchIsAwake) {
+		if (!nvt_ts_point_data_checksum(ts->thp_frame_buf,
+						POINT_DATA_CHECKSUM_LEN))
+			nvt_ts_wakeup_gesture_report(
+				ts->thp_frame_buf[1] >> 3, ts->thp_frame_buf);
+		return 0;
+	}
+#endif
+
+	if (!nvt_thp_frame_is_valid(ts->thp_frame_buf))
+		return -EBADMSG;
+
+	frame = get_raw_data_base_common(0);
+	if (!frame)
+		return -ENODEV;
+
+	frame->timestamp_ns = ktime_get_real_ns();
+	frame->frame_count = ts->thp_frame_count++;
+	frame->frame_type = 0;
+	frame->status = 0;
+	memcpy(frame->tp_raw, ts->thp_frame_buf + 0x101, NVT_THP_DATA_LEN);
+	notify_raw_data_update_common(0);
+
+	return 0;
+}
+#endif
 /*******************************************************
 Description:
 	Novatek touchscreen work function.
@@ -2234,6 +2311,12 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 		}
 	}
 #endif /* NVT_PM_WAIT_BUS_RESUME_COMPLETE */
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	ret = nvt_report_thp_frame();
+	if (ret < 0 && ret != -EAGAIN && ret != -EBADMSG)
+		NVT_ERR("raw frame read failed.(%d)\n", ret);
+	goto XFER_ERROR;
+#endif
 /*P16 code for BUGP16-8418 by xiongdejun at 2025/7/15 start*/
 	if (ts->fw_debug_info_switch) {
 		ret = CTP_SPI_READ(ts->client, point_data, POINT_DATA_FW_DEBUG_INFO_LEN + 1);
@@ -3172,6 +3255,31 @@ static int nvt_reset_mode(int mode)
 	NVT_LOG("%s, mode:%d\n",  __func__, mode);
 	return 0;
 }
+
+static int nvt_register_touch_panel_common(struct device *dev)
+{
+	hardware_param_t hardware_param = { 0 };
+
+	hardware_param.x_resolution = 1280;
+	hardware_param.y_resolution = 2772;
+	hardware_param.rx_num = 18;
+	hardware_param.tx_num = 39;
+	hardware_param.super_resolution_factor = 100;
+	hardware_param.frame_data_page_size = 2;
+	hardware_param.frame_data_buf_size = 10;
+	hardware_param.raw_data_page_size = 8;
+	hardware_param.raw_data_buf_size = 5;
+	memcpy(hardware_param.lockdown_info, ts->lockdown,
+	       sizeof(hardware_param.lockdown_info));
+	strscpy(hardware_param.config_file_name,
+		ts->lcd_id_value1 == 0 ? "p10u_nova_tm_thp_config.ini" :
+					      "p10u_nova_csot_thp_config.ini",
+		sizeof(hardware_param.config_file_name));
+	strscpy(hardware_param.driver_version, "nvt_version_2025.04.27-001",
+		sizeof(hardware_param.driver_version));
+
+	return register_touch_panel_common(dev, 0, &hardware_param, NULL);
+}
 #endif
 /*end porting xiaomi codes*/
 
@@ -3452,6 +3560,22 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		goto err_malloc_rbuf;
 	}
 
+	ts->thp_frame_buf = kzalloc(NVT_THP_FRAME_BUF_LEN, GFP_KERNEL);
+	if (!ts->thp_frame_buf) {
+		NVT_ERR("kzalloc for thp frame buffer failed!\n");
+		ret = -ENOMEM;
+		goto err_malloc_thp_frame_buf;
+	}
+
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	ret = nvt_register_touch_panel_common(&client->dev);
+	if (ret) {
+		NVT_ERR("register touch panel common failed. ret=%d\n", ret);
+		goto err_register_touch_panel_common;
+	}
+	ts->touch_panel_registered = true;
+#endif
+
 #if NVT_PM_WAIT_BUS_RESUME_COMPLETE
 	ts->dev_pm_suspend = false;
 	init_completion(&ts->dev_pm_resume_completion);
@@ -3570,6 +3694,7 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	//---set input device info.---
 	ts->input_dev->evbit[0] = BIT_MASK(EV_SYN) | BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
 	ts->input_dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
+	ts->input_dev->keybit[BIT_WORD(BTN_TOOL_FINGER)] |= BIT_MASK(BTN_TOOL_FINGER);
 	ts->input_dev->propbit[0] = BIT(INPUT_PROP_DIRECT);
 
 #if MT_PROTOCOL_B
@@ -4005,6 +4130,18 @@ err_gpio_config_failed:
 err_spi_setup:
 err_ckeck_full_duplex:
 	spi_set_drvdata(client, NULL);
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	if (ts->touch_panel_registered) {
+		unregister_touch_panel_common(0);
+		ts->touch_panel_registered = false;
+	}
+err_register_touch_panel_common:
+#endif
+	if (ts->thp_frame_buf) {
+		kfree(ts->thp_frame_buf);
+		ts->thp_frame_buf = NULL;
+	}
+err_malloc_thp_frame_buf:
 	if (ts->rbuf) {
 		kfree(ts->rbuf);
 		ts->rbuf = NULL;
@@ -4127,6 +4264,18 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 	}
 
 	spi_set_drvdata(client, NULL);
+
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	if (ts->touch_panel_registered) {
+		unregister_touch_panel_common(0);
+		ts->touch_panel_registered = false;
+	}
+#endif
+
+	if (ts->thp_frame_buf) {
+		kfree(ts->thp_frame_buf);
+		ts->thp_frame_buf = NULL;
+	}
 
 	if (ts->xbuf) {
 		kfree(ts->xbuf);

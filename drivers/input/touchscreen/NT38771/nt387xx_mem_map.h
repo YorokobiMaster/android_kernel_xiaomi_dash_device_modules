@@ -123,7 +123,7 @@ static const struct nvt_ts_hw_reg_addr_info hw_reg_addr_info_old_spe2 = {
 
 /* tddi */
 static const struct nvt_ts_mem_map NT38771_memory_map = {
-	.EVENT_BUF_ADDR               = 0x2B400,
+	.EVENT_BUF_ADDR               = 0x31400,
 	.RAW_PIPE0_ADDR               = 0x2EEC8,
 	.RAW_PIPE1_ADDR               = 0x2EEC8,
 	.BASELINE_ADDR                = 0x304A8,
