@@ -520,12 +520,12 @@ static long xiaomi_touch_dev_ioctl(struct file *file, unsigned int cmd,
 			return -EINVAL;
 		panel = &touch_panel_data[touch_id];
 		index = atomic_read(&client->frame_data_index);
+		if (index == atomic_read(&panel->frame_data_index))
+			return -1;
 		ret = index;
-		if (index != atomic_read(&panel->frame_data_index)) {
-			if (++index >= panel->frame_data_buf_size)
-				index = 0;
-			atomic_set(&client->frame_data_index, index);
-		}
+		if (++index >= panel->frame_data_buf_size)
+			index = 0;
+		atomic_set(&client->frame_data_index, index);
 		return ret;
 
 	case RAW_DATA_INDEX:
