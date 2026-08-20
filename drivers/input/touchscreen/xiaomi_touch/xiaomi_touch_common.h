@@ -254,6 +254,7 @@ struct xiaomi_touch_client {
 struct xiaomi_touch_panel_data {
 	bool registered;
 	hardware_param_t hardware_param;
+	hardware_operation_t hardware_operation;
 	atomic_t frame_data_index;
 	size_t frame_data_size;
 	u8 frame_data_buf_size;
@@ -277,7 +278,8 @@ extern int update_palm_sensor_value(int value);
 extern int update_prox_sensor_value(int value);
 extern int xiaomitouch_register_modedata(int touchId, struct xiaomi_touch_interface *data);
 extern int register_touch_panel_common(struct device *dev, int touch_id,
-		const hardware_param_t *hardware_param, const void *hardware_operation);
+		const hardware_param_t *hardware_param,
+		const hardware_operation_t *hardware_operation);
 extern void unregister_touch_panel_common(int touch_id);
 extern void *get_raw_data_base_common(int touch_id);
 extern void notify_raw_data_update_common(int touch_id);

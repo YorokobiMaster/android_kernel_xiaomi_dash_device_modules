@@ -229,6 +229,12 @@ typedef struct common_data {
 	u16 data_len;
 	s32 data_buf[CMD_DATA_BUF_SIZE];
 } common_data_t;
+typedef struct hardware_operation {
+	void (*reserved_00[21])(void);
+	int (*set_thp_ic_mode)(common_data_t *data);
+	int (*get_thp_ic_mode)(common_data_t *data);
+	void (*reserved_b8[8])(void);
+} hardware_operation_t;
 typedef struct hardware_param {
 	u16 x_resolution;
 	u16 y_resolution;

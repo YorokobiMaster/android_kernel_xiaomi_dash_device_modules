@@ -1051,6 +1051,52 @@ out:
 	return ret;
 }
 
+static int32_t nvt_set_extend_custom_cmd(uint8_t command, uint16_t value)
+{
+	uint8_t buf[6] = { 0 };
+	uint8_t status = 0;
+	int32_t ret;
+	int32_t i;
+
+	if (!ts)
+		return -ENODEV;
+	if (ts->nvt_tool_in_use)
+		return -EBUSY;
+
+	ret = nvt_set_page(ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HOST_CMD);
+	if (ret < 0)
+		return ret;
+
+	for (i = 0; i < 200; i++) {
+		if (status != 0xBF) {
+			buf[0] = EVENT_MAP_HOST_CMD;
+			buf[1] = 0xBF;
+			buf[2] = command;
+			buf[3] = value & 0xFF;
+			buf[4] = value >> 8;
+			buf[5] = 0;
+			ret = CTP_SPI_WRITE(ts->client, buf, sizeof(buf));
+			if (ret < 0)
+				return ret;
+		}
+
+		usleep_range(500, 600);
+		buf[0] = EVENT_MAP_HOST_CMD;
+		buf[1] = 0xFF;
+		ret = CTP_SPI_READ(ts->client, buf, 2);
+		if (ret < 0)
+			return ret;
+		status = buf[1];
+		if (status == 0)
+			return 0;
+	}
+
+	NVT_ERR("send extend cmd 0x%02X failed, status=0x%02X\n",
+		command, status);
+	nvt_read_fw_history_all();
+	return -EIO;
+}
+
 /*******************************************************
   Create Device Node (Proc Entry)
 *******************************************************/
@@ -3256,6 +3302,102 @@ static int nvt_reset_mode(int mode)
 	return 0;
 }
 
+static int nvt_thp_ic_set_mode(common_data_t *data)
+{
+	char value_buf[CMD_DATA_BUF_SIZE + 1];
+	unsigned int value = 0;
+	uint8_t command = 0;
+	int ret;
+
+	if (!ts)
+		return -ENODEV;
+	if (data->mode <= THP_IC_CMD_BASE || data->mode > SET_OPEN_TRANSPORT_MODE)
+		return -EOPNOTSUPP;
+	if (data->mode == SET_OPEN_TRANSPORT_MODE)
+		return -EOPNOTSUPP;
+
+	switch (data->mode) {
+	case SET_IDLE_THD:
+		command = 0x02;
+		break;
+	case SET_IDLE_RATE:
+	case SET_ENTER_SLEEP_MODE:
+		command = 0xFF;
+		break;
+	case SET_FOD_EN:
+		command = 0x1A;
+		break;
+	case SET_SCAN_FREQ:
+		command = 0x09;
+		break;
+	case SET_SCAN_FREQ_HOPPING_EN:
+		command = 0x08;
+		break;
+	case SET_CHARGING_STATUS_EN:
+		command = 0x10;
+		break;
+	case SET_DOUBLE_CHLICK_EN:
+		command = 0x11;
+		break;
+	case ACTIVE_STYLUS_ONLY_EN:
+		command = 0x05;
+		break;
+	case SET_IC_LOG_LEVEL:
+		command = 0x13;
+		break;
+	case SET_FILTER_LEVEL:
+		command = 0x14;
+		break;
+	case SET_RAW_TYPE:
+		command = 0x06;
+		break;
+	default:
+		break;
+	}
+
+	if (data->data_len) {
+		memcpy(value_buf, data->data_buf, data->data_len);
+		value_buf[data->data_len] = '\0';
+		ret = kstrtouint(value_buf, 10, &value);
+		if (ret)
+			return ret;
+	}
+
+	mutex_lock(&ts->lock);
+	ret = nvt_set_extend_custom_cmd(command, (uint16_t)value);
+	mutex_unlock(&ts->lock);
+
+	return ret;
+}
+
+static int nvt_thp_ic_get_mode(common_data_t *data)
+{
+	uint8_t *buf = (uint8_t *)data->data_buf;
+	int ret;
+
+	if (!ts)
+		return -ENODEV;
+	if (data->mode <= THP_IC_CMD_BASE || data->mode > SET_OPEN_TRANSPORT_MODE)
+		return -EOPNOTSUPP;
+	if (data->mode == SET_OPEN_TRANSPORT_MODE)
+		return -EOPNOTSUPP;
+	if (ts->nvt_tool_in_use)
+		return -EBUSY;
+
+	mutex_lock(&ts->lock);
+	ret = nvt_set_page(ts->mmap->EVENT_BUF_ADDR);
+	if (!ret)
+		ret = CTP_SPI_READ(ts->client, buf, 2);
+	mutex_unlock(&ts->lock);
+
+	return ret;
+}
+
+static const hardware_operation_t nvt_hardware_operation = {
+	.set_thp_ic_mode = nvt_thp_ic_set_mode,
+	.get_thp_ic_mode = nvt_thp_ic_get_mode,
+};
+
 static int nvt_register_touch_panel_common(struct device *dev)
 {
 	hardware_param_t hardware_param = { 0 };
@@ -3278,7 +3420,8 @@ static int nvt_register_touch_panel_common(struct device *dev)
 	strscpy(hardware_param.driver_version, "nvt_version_2025.04.27-001",
 		sizeof(hardware_param.driver_version));
 
-	return register_touch_panel_common(dev, 0, &hardware_param, NULL);
+	return register_touch_panel_common(dev, 0, &hardware_param,
+				   &nvt_hardware_operation);
 }
 #endif
 /*end porting xiaomi codes*/

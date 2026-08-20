@@ -91,15 +91,14 @@ void netlink_exit(void)
 }
 
 int register_touch_panel_common(struct device *dev, int touch_id,
-		const hardware_param_t *hardware_param, const void *hardware_operation)
+		const hardware_param_t *hardware_param,
+		const hardware_operation_t *hardware_operation)
 {
 	struct xiaomi_touch_panel_data *panel;
 	size_t frame_total;
 	size_t raw_total;
 
 	(void)dev;
-	(void)hardware_operation;
-
 	if (touch_id < 0 || touch_id >= XIAOMI_TOUCH_MAX_PANEL || !hardware_param)
 		return -EINVAL;
 
@@ -130,6 +129,10 @@ int register_touch_panel_common(struct device *dev, int touch_id,
 	}
 
 	memcpy(&panel->hardware_param, hardware_param, sizeof(*hardware_param));
+	memset(&panel->hardware_operation, 0, sizeof(panel->hardware_operation));
+	if (hardware_operation)
+		memcpy(&panel->hardware_operation, hardware_operation,
+		       sizeof(panel->hardware_operation));
 	panel->frame_data_size =
 		(size_t)hardware_param->frame_data_page_size * PAGE_SIZE;
 	panel->frame_data_buf_size = hardware_param->frame_data_buf_size;
@@ -177,6 +180,7 @@ void unregister_touch_panel_common(int touch_id)
 	kfree(panel->frame_data);
 	panel->raw_data = NULL;
 	panel->frame_data = NULL;
+	memset(&panel->hardware_operation, 0, sizeof(panel->hardware_operation));
 }
 EXPORT_SYMBOL_GPL(unregister_touch_panel_common);
 
@@ -379,6 +383,7 @@ static long xiaomi_touch_dev_ioctl(struct file *file, unsigned int cmd,
 		    common_data.data_len > CMD_DATA_BUF_SIZE)
 			return -EINVAL;
 		touch_data = touch_pdata->touch_data[touch_id];
+		panel = &touch_panel_data[touch_id];
 
 		mutex_lock(&touch_pdata->device->mutex);
 		switch (common_data.cmd) {
@@ -432,9 +437,18 @@ static long xiaomi_touch_dev_ioctl(struct file *file, unsigned int cmd,
 					common_data.data_len, common_data.data_buf);
 			break;
 		case SET_THP_IC_CUR_VALUE:
+			if (!panel->hardware_operation.set_thp_ic_mode) {
+				ret = -EOPNOTSUPP;
+				break;
+			}
+			ret = panel->hardware_operation.set_thp_ic_mode(&common_data);
 			break;
 		case GET_THP_IC_CUR_VALUE:
-			ret = -EOPNOTSUPP;
+			if (!panel->hardware_operation.get_thp_ic_mode) {
+				ret = -EOPNOTSUPP;
+				break;
+			}
+			ret = panel->hardware_operation.get_thp_ic_mode(&common_data);
 			break;
 		case SET_CMD_FOR_THP:
 			add_common_data_to_buf(touch_id, SET_CUR_VALUE,
