@@ -2234,11 +2234,16 @@ static bool nvt_thp_frame_is_valid(const u8 *data)
 static int nvt_report_thp_frame(void)
 {
 	struct nvt_thp_frame *frame;
+	uint16_t read_len = NVT_THP_SPI_READ_LEN;
 	int ret;
 
+#if WAKEUP_GESTURE
+	if (!bTouchIsAwake)
+		read_len = POINT_DATA_LEN + 1;
+#endif
+
 	memset(ts->thp_frame_buf, 0, NVT_THP_FRAME_BUF_LEN);
-	ret = CTP_SPI_READ(ts->client, ts->thp_frame_buf,
-			   NVT_THP_SPI_READ_LEN);
+	ret = CTP_SPI_READ(ts->client, ts->thp_frame_buf, read_len);
 	if (ret < 0)
 		return ret;
 
