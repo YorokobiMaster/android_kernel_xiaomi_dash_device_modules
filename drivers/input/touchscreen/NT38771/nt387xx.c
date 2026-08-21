@@ -1051,7 +1051,7 @@ out:
 	return ret;
 }
 
-static int32_t nvt_set_extend_custom_cmd(uint8_t command, uint16_t value)
+int32_t nvt_set_extend_custom_cmd(uint8_t command, uint16_t value)
 {
 	uint8_t buf[6] = { 0 };
 	uint8_t status = 0;
@@ -1072,9 +1072,9 @@ static int32_t nvt_set_extend_custom_cmd(uint8_t command, uint16_t value)
 			buf[0] = EVENT_MAP_HOST_CMD;
 			buf[1] = 0xBF;
 			buf[2] = command;
-			buf[3] = value & 0xFF;
-			buf[4] = value >> 8;
-			buf[5] = 0;
+			buf[3] = 0;
+			buf[4] = value & 0xFF;
+			buf[5] = value >> 8;
 			ret = CTP_SPI_WRITE(ts->client, buf, sizeof(buf));
 			if (ret < 0)
 				return ret;
@@ -1092,6 +1092,55 @@ static int32_t nvt_set_extend_custom_cmd(uint8_t command, uint16_t value)
 	}
 
 	NVT_ERR("send extend cmd 0x%02X failed, status=0x%02X\n",
+		command, status);
+	nvt_read_fw_history_all();
+	return -EIO;
+}
+
+int32_t nvt_get_extend_custom_cmd(uint8_t command, uint16_t *value)
+{
+	uint8_t buf[6] = { 0 };
+	uint8_t status = 0;
+	int32_t ret;
+	int32_t i;
+
+	if (!ts)
+		return -ENODEV;
+	if (!value)
+		return -EINVAL;
+	if (ts->nvt_tool_in_use)
+		return -EBUSY;
+
+	ret = nvt_set_page(ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HOST_CMD);
+	if (ret < 0)
+		return ret;
+
+	for (i = 0; i < 200; i++) {
+		if (status != 0xBF) {
+			buf[0] = EVENT_MAP_HOST_CMD;
+			buf[1] = 0xBF;
+			buf[2] = command;
+			buf[3] = 1;
+			ret = CTP_SPI_WRITE(ts->client, buf, 4);
+			if (ret < 0)
+				return ret;
+		}
+
+		usleep_range(500, 600);
+		memset(buf, 0, sizeof(buf));
+		buf[0] = EVENT_MAP_HOST_CMD;
+		buf[1] = 0xFF;
+		ret = CTP_SPI_READ(ts->client, buf, sizeof(buf));
+		if (ret < 0)
+			return ret;
+		status = buf[1];
+		if (status == 0) {
+			*value = buf[4] | (buf[5] << 8);
+			return 0;
+		}
+	}
+
+	NVT_ERR("get extend cmd 0x%02X failed, status=0x%02X\n",
 		command, status);
 	nvt_read_fw_history_all();
 	return -EIO;

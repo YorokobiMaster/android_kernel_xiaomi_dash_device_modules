@@ -422,6 +422,8 @@ extern int update_fod_press_status(int value);
 void nvt_ts_fod_down_report(uint16_t fod_x, uint16_t fod_y);
 void nvt_ts_fod_up_report(void);
 int32_t nvt_set_gesture_switch(uint8_t gesture_switch);
+int32_t nvt_set_extend_custom_cmd(uint8_t command, uint16_t value);
+int32_t nvt_get_extend_custom_cmd(uint8_t command, uint16_t *value);
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 start */
 int32_t nvt_set_charger_switch(uint8_t charger_switch);

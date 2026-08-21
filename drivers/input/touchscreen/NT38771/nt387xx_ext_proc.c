@@ -1088,20 +1088,26 @@ static const struct file_operations nvt_pocket_palm_switch_fops = {
 
 int32_t nvt_set_gesture_switch(uint8_t gesture_switch)
 {
-	int32_t ret = 0;
-	uint8_t buf[8] = {0};
+	uint16_t readback = 0;
+	int32_t ret = -EIO;
+	int32_t i;
 
 	NVT_LOG("++\n");
 
 	NVT_LOG("set gesture_switch: 0x%02X\n", gesture_switch);
-	buf[0] = 0x7F;
-	buf[1] = 0x01;
-	buf[2] = gesture_switch;
-	ret = nvt_set_custom_cmd(buf, 3);
-	if (ret < 0) {
-		NVT_ERR("nvt_set_custom_cmd fail! ret=%d\n", ret);
-		goto out;
+	for (i = 0; i < 3; i++) {
+		nvt_set_extend_custom_cmd(0x1E, gesture_switch);
+		ret = nvt_get_extend_custom_cmd(0x1E, &readback);
+		if (!ret && readback == gesture_switch) {
+			NVT_LOG("set gesture switch 0x%04X success, tried %d times\n",
+				gesture_switch, i);
+			goto out;
+		}
 	}
+
+	NVT_ERR("set gesture switch 0x%04X fail! get_gesture_switch=0x%04X\n",
+		gesture_switch, readback);
+	ret = -EIO;
 
 out:
 	NVT_LOG("--\n");
