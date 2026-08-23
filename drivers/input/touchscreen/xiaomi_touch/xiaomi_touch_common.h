@@ -5,6 +5,7 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/notifier.h>
 #include <linux/wait.h>
 #include <linux/types.h>
 #include <linux/ioctl.h>
@@ -27,6 +28,7 @@
 #include <linux/seq_file.h>
 #include <linux/time.h>
 #include <linux/time64.h>
+#include <linux/workqueue.h>
 #include <drm/drm_panel.h>
 #include "xiaomi_touch_type_common.h"
 /*P16 code for HQFEAT-89149 by xiongdejun at 2024/4/25 start*/
@@ -253,6 +255,13 @@ struct xiaomi_touch_client {
 };
 struct xiaomi_touch_panel_data {
 	bool registered;
+	bool panel_notifier_registered;
+	bool suspended;
+	struct device *dev;
+	struct notifier_block panel_notifier;
+	struct workqueue_struct *pm_wq;
+	struct work_struct resume_work;
+	struct mutex pm_lock;
 	hardware_param_t hardware_param;
 	hardware_operation_t hardware_operation;
 	atomic_t frame_data_index;
@@ -281,6 +290,9 @@ extern int register_touch_panel_common(struct device *dev, int touch_id,
 		const hardware_param_t *hardware_param,
 		const hardware_operation_t *hardware_operation);
 extern void unregister_touch_panel_common(int touch_id);
+extern int xiaomi_register_panel_notifier_common(struct device *dev,
+		int touch_id);
+extern void xiaomi_unregister_panel_notifier_common(int touch_id);
 extern void *get_raw_data_base_common(int touch_id);
 extern void notify_raw_data_update_common(int touch_id);
 extern int copy_touch_rawdata(char *raw_base,  int len);

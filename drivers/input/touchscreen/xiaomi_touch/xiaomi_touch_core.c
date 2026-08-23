@@ -9,6 +9,9 @@
 #include <net/sock.h>
 #include <net/netlink.h>
 #include "xiaomi_touch_common.h"
+#if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
+#include "../../../gpu/drm/mediatek/mediatek_v2/mi_disp/mi_disp_notifier.h"
+#endif
 //#include "../tp_get_lcm_name/tp_get_lcd_name.h"
 #define NETLINK_TEST 24
 #define MAX_MSGSIZE 16
@@ -24,6 +27,172 @@ static DEFINE_MUTEX(thp_ic_read_data_mutex);
 static DEFINE_MUTEX(thp_ic_write_data_mutex);
 static bool xiaomi_touch_probe_finished = false;
 #define RAW_SIZE (PAGE_SIZE * 12)
+
+static_assert(sizeof(hardware_operation_t) == 31 * sizeof(void *));
+static_assert(offsetof(hardware_operation_t, set_cur_value) ==
+		4 * sizeof(void *));
+static_assert(offsetof(hardware_operation_t, display_suspend_ready) ==
+		20 * sizeof(void *));
+static_assert(offsetof(hardware_operation_t, resume_suspend) ==
+		23 * sizeof(void *));
+
+static void xiaomi_touch_resume_work(struct work_struct *work)
+{
+	struct xiaomi_touch_panel_data *panel = container_of(work,
+			struct xiaomi_touch_panel_data, resume_work);
+	int ret;
+
+	mutex_lock(&panel->pm_lock);
+	if (!panel->registered || !panel->panel_notifier_registered ||
+	    !panel->suspended) {
+		mutex_unlock(&panel->pm_lock);
+		return;
+	}
+
+	if (!panel->hardware_operation.resume_suspend) {
+		mutex_unlock(&panel->pm_lock);
+		return;
+	}
+
+	ret = panel->hardware_operation.resume_suspend(1, 0);
+	if (!ret) {
+		panel->suspended = false;
+		xiaomi_touch_set_suspend_state(XIAOMI_TOUCH_RESUME);
+	} else {
+		dev_err(panel->dev, "touch resume failed: %d\n", ret);
+	}
+	mutex_unlock(&panel->pm_lock);
+}
+
+#if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
+static int xiaomi_drm_panel_notifier_callback(struct notifier_block *nb,
+		unsigned long event, void *data)
+{
+	struct xiaomi_touch_panel_data *panel = container_of(nb,
+			struct xiaomi_touch_panel_data, panel_notifier);
+	struct mi_disp_notifier *evdata = data;
+	int blank;
+	int ret;
+
+	if (event != MI_DISP_DPMS_EVENT && event != MI_DISP_DPMS_EARLY_EVENT)
+		return NOTIFY_DONE;
+	if (!evdata || !evdata->data)
+		return NOTIFY_DONE;
+
+	blank = *(int *)evdata->data;
+	if (blank == MI_DISP_DPMS_LP1 || blank == MI_DISP_DPMS_LP2 ||
+	    blank == MI_DISP_DPMS_POWERDOWN) {
+		/* Finish an older resume before entering the low-power state. */
+		flush_workqueue(panel->pm_wq);
+
+		mutex_lock(&panel->pm_lock);
+		if (!panel->registered || !panel->panel_notifier_registered ||
+		    panel->suspended) {
+			mutex_unlock(&panel->pm_lock);
+			return NOTIFY_OK;
+		}
+		if (!panel->hardware_operation.resume_suspend) {
+			mutex_unlock(&panel->pm_lock);
+			return NOTIFY_DONE;
+		}
+
+		ret = panel->hardware_operation.resume_suspend(0, 0);
+		if (!ret) {
+			panel->suspended = true;
+			xiaomi_touch_set_suspend_state(XIAOMI_TOUCH_SUSPEND);
+		} else {
+			dev_err(panel->dev, "touch suspend failed: %d\n", ret);
+		}
+		mutex_unlock(&panel->pm_lock);
+		return NOTIFY_OK;
+	}
+
+	if (event == MI_DISP_DPMS_EVENT && blank == MI_DISP_DPMS_ON) {
+		queue_work(panel->pm_wq, &panel->resume_work);
+		return NOTIFY_OK;
+	}
+
+	if (event == MI_DISP_DPMS_EARLY_EVENT &&
+	    blank == MI_DISP_DPMS_OFF) {
+		mutex_lock(&panel->pm_lock);
+		if (panel->registered && panel->panel_notifier_registered &&
+		    panel->hardware_operation.display_suspend_ready)
+			panel->hardware_operation.display_suspend_ready();
+		mutex_unlock(&panel->pm_lock);
+		return NOTIFY_OK;
+	}
+
+	return NOTIFY_DONE;
+}
+#endif
+
+int xiaomi_register_panel_notifier_common(struct device *dev, int touch_id)
+{
+	struct xiaomi_touch_panel_data *panel;
+	int ret;
+
+	if (!dev || touch_id < 0 || touch_id >= XIAOMI_TOUCH_MAX_PANEL)
+		return -EINVAL;
+
+	panel = &touch_panel_data[touch_id];
+	if (!panel->registered)
+		return -ENODEV;
+	if (panel->panel_notifier_registered)
+		return -EBUSY;
+
+#if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
+	panel->pm_wq = alloc_ordered_workqueue("xiaomi_touch_pm_%d",
+			WQ_MEM_RECLAIM, touch_id);
+	if (!panel->pm_wq)
+		return -ENOMEM;
+
+	panel->dev = dev;
+	panel->suspended = false;
+	INIT_WORK(&panel->resume_work, xiaomi_touch_resume_work);
+	panel->panel_notifier.notifier_call =
+		xiaomi_drm_panel_notifier_callback;
+	ret = mi_disp_register_client(&panel->panel_notifier);
+	if (ret) {
+		destroy_workqueue(panel->pm_wq);
+		panel->pm_wq = NULL;
+		panel->dev = NULL;
+		return ret;
+	}
+	panel->panel_notifier_registered = true;
+	return 0;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+EXPORT_SYMBOL_GPL(xiaomi_register_panel_notifier_common);
+
+void xiaomi_unregister_panel_notifier_common(int touch_id)
+{
+	struct xiaomi_touch_panel_data *panel;
+
+	if (touch_id < 0 || touch_id >= XIAOMI_TOUCH_MAX_PANEL)
+		return;
+
+	panel = &touch_panel_data[touch_id];
+	if (!panel->panel_notifier_registered)
+		return;
+
+#if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
+	if (mi_disp_unregister_client(&panel->panel_notifier))
+		dev_err(panel->dev, "failed to unregister display notifier\n");
+#endif
+	cancel_work_sync(&panel->resume_work);
+	destroy_workqueue(panel->pm_wq);
+	panel->pm_wq = NULL;
+
+	mutex_lock(&panel->pm_lock);
+	panel->panel_notifier_registered = false;
+	panel->suspended = false;
+	panel->dev = NULL;
+	mutex_unlock(&panel->pm_lock);
+}
+EXPORT_SYMBOL_GPL(xiaomi_unregister_panel_notifier_common);
+
 void sendnlmsg(char message)//char *message
 {
 	struct sk_buff *skb_1;
@@ -147,6 +316,7 @@ int register_touch_panel_common(struct device *dev, int touch_id,
 	INIT_LIST_HEAD(&panel->client_list);
 	spin_lock_init(&panel->client_lock);
 	mutex_init(&panel->common_data_lock);
+	mutex_init(&panel->pm_lock);
 	panel->registered = true;
 
 	return 0;
@@ -166,6 +336,7 @@ void unregister_touch_panel_common(int touch_id)
 	panel = &touch_panel_data[touch_id];
 	if (!panel->registered)
 		return;
+	xiaomi_unregister_panel_notifier_common(touch_id);
 
 	spin_lock_irqsave(&panel->client_lock, flags);
 	list_for_each_entry_safe(client, next, &panel->client_list, node) {
@@ -388,13 +559,32 @@ static long xiaomi_touch_dev_ioctl(struct file *file, unsigned int cmd,
 		mutex_lock(&touch_pdata->device->mutex);
 		switch (common_data.cmd) {
 		case SET_CUR_VALUE:
-			if (!common_data.data_len || !touch_data->setModeValue) {
+			if (!common_data.data_len) {
 				ret = -EOPNOTSUPP;
 				break;
 			}
-			common_data.data_buf[0] =
-				touch_data->setModeValue(common_data.mode,
-					common_data.data_buf[0]);
+			memset(&common_data.data_buf[common_data.data_len], 0,
+			       sizeof(common_data.data_buf) -
+			       common_data.data_len * sizeof(common_data.data_buf[0]));
+			if (common_data.mode < Touch_Mode_NUM) {
+				if (!touch_data->setModeValue) {
+					ret = -EOPNOTSUPP;
+					break;
+				}
+				common_data.data_buf[0] =
+					touch_data->setModeValue(common_data.mode,
+						common_data.data_buf[0]);
+			} else {
+				if (!panel->registered ||
+				    !panel->hardware_operation.set_cur_value) {
+					ret = -EOPNOTSUPP;
+					break;
+				}
+				common_data.data_buf[0] =
+					panel->hardware_operation.set_cur_value(
+						common_data.mode,
+						common_data.data_buf);
+			}
 			break;
 		case GET_CUR_VALUE:
 		case GET_DEF_VALUE:
@@ -437,18 +627,18 @@ static long xiaomi_touch_dev_ioctl(struct file *file, unsigned int cmd,
 					common_data.data_len, common_data.data_buf);
 			break;
 		case SET_THP_IC_CUR_VALUE:
-			if (!panel->hardware_operation.set_thp_ic_mode) {
+			if (!panel->hardware_operation.htc_ic_set_mode_value) {
 				ret = -EOPNOTSUPP;
 				break;
 			}
-			ret = panel->hardware_operation.set_thp_ic_mode(&common_data);
+			ret = panel->hardware_operation.htc_ic_set_mode_value(&common_data);
 			break;
 		case GET_THP_IC_CUR_VALUE:
-			if (!panel->hardware_operation.get_thp_ic_mode) {
+			if (!panel->hardware_operation.htc_ic_get_mode_value) {
 				ret = -EOPNOTSUPP;
 				break;
 			}
-			ret = panel->hardware_operation.get_thp_ic_mode(&common_data);
+			ret = panel->hardware_operation.htc_ic_get_mode_value(&common_data);
 			break;
 		case SET_CMD_FOR_THP:
 			add_common_data_to_buf(touch_id, SET_CUR_VALUE,

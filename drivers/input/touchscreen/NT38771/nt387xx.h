@@ -218,8 +218,7 @@ struct nvt_ts_data {
 	int8_t phys[32];
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
-	struct notifier_block xiaomi_panel_notif;
-/*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
+	/* Display lifecycle is owned by xiaomi_touch_common. */
 #elif IS_ENABLED(NVT_MSM_DRM_NOTIFY)
 	struct notifier_block drm_notif;
 #elif IS_ENABLED(NVT_FB_NOTIFY)
@@ -322,8 +321,10 @@ struct nvt_ts_data {
 #endif
 #if NVT_PM_WAIT_BUS_RESUME_COMPLETE
 	bool dev_pm_suspend;
+	bool irq_wake_enabled;
 	struct completion dev_pm_resume_completion;
 #endif
+	bool display_suspend_ready;
 #if NVT_DRIVER_INSERT_FRAME
 	struct hrtimer nvt_hrtimer;
 	ktime_t kt_delay;

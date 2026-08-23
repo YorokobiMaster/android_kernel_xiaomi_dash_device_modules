@@ -230,10 +230,34 @@ typedef struct common_data {
 	s32 data_buf[CMD_DATA_BUF_SIZE];
 } common_data_t;
 typedef struct hardware_operation {
-	void (*reserved_00[21])(void);
-	int (*set_thp_ic_mode)(common_data_t *data);
-	int (*get_thp_ic_mode)(common_data_t *data);
-	void (*reserved_b8[8])(void);
+	void (*self_test)(void);
+	void (*reserved_08)(void);
+	void (*lockdown_info_read)(void);
+	void (*get_fw_version)(void);
+	int (*set_cur_value)(int mode, int *values);
+	void (*reserved_28[3])(void);
+	void (*switch_mode)(void);
+	void (*cmd_mode_update)(void);
+	void (*reserved_50[2])(void);
+	void (*enable_touch_raw)(void);
+	void (*panel_vendor_read)(void);
+	void (*panel_color_read)(void);
+	void (*panel_display_read)(void);
+	void (*touch_vendor_read)(void);
+	void (*reserved_88)(void);
+	void (*touch_doze_analysis)(void);
+	void (*reserved_98)(void);
+	void (*display_suspend_ready)(void);
+	int (*htc_ic_set_mode_value)(common_data_t *data);
+	int (*htc_ic_get_mode_value)(common_data_t *data);
+	int (*resume_suspend)(int resume, int gesture_type);
+	void (*set_charge_state)(void);
+	void (*limit_version_read)(void);
+	void (*reserved_d0)(void);
+	void (*fod_test)(void);
+	void (*fod_attn_test)(void);
+	void (*fod_low_attn)(void);
+	void (*set_thermal_temp)(void);
 } hardware_operation_t;
 typedef struct hardware_param {
 	u16 x_resolution;

@@ -127,12 +127,10 @@ extern void Boot_Update_Firmware(struct work_struct *work);
 static void nvt_set_gesture_mode(int value);
 /*P16 code for BUGP16-2768 by xiongdejun at 2025/5/26 end*/
 /* P16 code for HQFEAT-94432 by p-liaoxianguo at 2025/3/27 start */
-static struct work_struct nvt_touch_resume_work;
-static struct workqueue_struct *nvt_touch_resume_workqueue;
 static int32_t nvt_ts_resume(struct device *dev);
+static int32_t nvt_ts_suspend(struct device *dev);
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
 static struct drm_panel *active_panel;
-static int nvt_xiaomi_panel_notifier_callback(struct notifier_block *self, unsigned long event, void *data);
 /* P16 code for HQFEAT-94432 by p-liaoxianguo at 2025/3/27 end */
 #elif IS_ENABLED(NVT_MSM_DRM_NOTIFY)
 static int nvt_drm_notifier_callback(struct notifier_block *self, unsigned long event, void *data);
@@ -1546,6 +1544,10 @@ void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
 				/*P16 code for BUGP16-2768 by liuyupei at 2025/5/16 end*/
 				// report FOD event.
 				if (ts->gesture_command & 0x04) {
+					if (!READ_ONCE(ts->display_suspend_ready)) {
+						NVT_LOG("display suspend not ready\n");
+						break;
+					}
 						if (fod_status == FOD_DOWN) {
 							if(!ts->fod_finger) {
 								NVT_LOG("Gesture : FOD Down, input_x=%d, input_y=%d.\n", input_x, input_y);
@@ -2905,12 +2907,6 @@ static int32_t nvt_ts_check_chip_ver_trim_loop(void) {
 }
 
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
-void nvt_touch_resume_workqueue_callback(struct work_struct *work)
-{
-	NVT_LOG("start\n");
-	nvt_ts_resume(&ts->client->dev);
-	NVT_LOG("end\n");
-}
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER) || IS_ENABLED(NVT_QCOM_PANEL_EVENT_NOTIFY)
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
 static int nvt_ts_check_dt(struct device_node *np)
@@ -3442,9 +3438,72 @@ static int nvt_thp_ic_get_mode(common_data_t *data)
 	return ret;
 }
 
+static int nvt_set_thp_cur_value(int mode, int *values)
+{
+	int value;
+	int ret;
+
+	if (!ts || !values)
+		return -ENODEV;
+	if (mode != THP_LOCK_SCAN_MODE)
+		return -EOPNOTSUPP;
+
+	value = values[0];
+	if (value < 0 || value > 2) {
+		NVT_ERR("THP_LOCK_SCAN_MODE does not support value %d\n", value);
+		return -EINVAL;
+	}
+
+	/* Stock only accepts the idle-scan command while the IC is fully awake. */
+	if (!bTouchIsAwake ||
+	    (ts->ic_state != NVT_STATE_INIT &&
+	     ts->ic_state != NVT_STATE_RESUME_IN &&
+	     ts->ic_state != NVT_STATE_RESUME_OUT)) {
+		NVT_LOG("ignore THP_LOCK_SCAN_MODE=%d while ic_state=%d awake=%d\n",
+			value, ts->ic_state, bTouchIsAwake);
+		return -EBUSY;
+	}
+
+	mutex_lock(&ts->lock);
+	if (value == 1 && values[1] && values[2])
+		ret = nvt_set_extend_custom_cmd(0x1F, 1);
+	else
+		ret = nvt_set_extend_custom_cmd(0x01, value == 1 ? 2 : 1);
+	mutex_unlock(&ts->lock);
+
+	NVT_LOG("THP_LOCK_SCAN_MODE=%d idle_cycle=%d keep_time=%d ret=%d\n",
+		value, values[1], values[2], ret);
+	return ret;
+}
+
+static void nvt_display_suspend_ready(void)
+{
+	if (!ts)
+		return;
+
+	WRITE_ONCE(ts->display_suspend_ready, true);
+	NVT_LOG("display suspend ready\n");
+}
+
+static int nvt_ts_resume_suspend(int resume, int gesture_type)
+{
+	(void)gesture_type;
+
+	if (!ts || !ts->client)
+		return -ENODEV;
+
+	if (resume)
+		return nvt_ts_resume(&ts->client->dev);
+
+	return nvt_ts_suspend(&ts->client->dev);
+}
+
 static const hardware_operation_t nvt_hardware_operation = {
-	.set_thp_ic_mode = nvt_thp_ic_set_mode,
-	.get_thp_ic_mode = nvt_thp_ic_get_mode,
+	.set_cur_value = nvt_set_thp_cur_value,
+	.display_suspend_ready = nvt_display_suspend_ready,
+	.htc_ic_set_mode_value = nvt_thp_ic_set_mode,
+	.htc_ic_get_mode_value = nvt_thp_ic_get_mode,
+	.resume_suspend = nvt_ts_resume_suspend,
 };
 
 static int nvt_register_touch_panel_common(struct device *dev)
@@ -3758,15 +3817,6 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		ret = -ENOMEM;
 		goto err_malloc_thp_frame_buf;
 	}
-
-#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
-	ret = nvt_register_touch_panel_common(&client->dev);
-	if (ret) {
-		NVT_ERR("register touch panel common failed. ret=%d\n", ret);
-		goto err_register_touch_panel_common;
-	}
-	ts->touch_panel_registered = true;
-#endif
 
 #if NVT_PM_WAIT_BUS_RESUME_COMPLETE
 	ts->dev_pm_suspend = false;
@@ -4093,22 +4143,30 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	}
 #endif
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
-	nvt_touch_resume_workqueue = create_singlethread_workqueue("nvt_touch_resume");
-	if(!nvt_touch_resume_workqueue){
-		NVT_ERR("nvt resume workqueue create fail");
+#ifdef CONFIG_FACTORY_BUILD
+	ts->gesture_command = 4;
+	NVT_LOG("fac probe gesture_command is 4\n");
+#else
+	ts->gesture_command = 0;
+	NVT_LOG("not fac probe, gesture_command is 0\n");
+#endif
+	bTouchIsAwake = 1;
+	WRITE_ONCE(ts->display_suspend_ready, false);
+
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	ret = nvt_register_touch_panel_common(&client->dev);
+	if (ret) {
+		NVT_ERR("register touch panel common failed. ret=%d\n", ret);
+		goto err_register_touch_panel_common_failed;
 	}
-	else{
-		INIT_WORK(&nvt_touch_resume_work, nvt_touch_resume_workqueue_callback);
-	}
+	ts->touch_panel_registered = true;
+#endif
 
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
-	ts->xiaomi_panel_notif.notifier_call = nvt_xiaomi_panel_notifier_callback;
-	ret = mi_disp_register_client(&ts->xiaomi_panel_notif);
+	ret = xiaomi_register_panel_notifier_common(&client->dev, 0);
 	if (ret) {
-		NVT_ERR("register xiaomi_panel_notif failed. ret=%d\n", ret);
+		NVT_ERR("register common panel notifier failed. ret=%d\n", ret);
 		goto err_register_xiaomi_panel_notif_failed;
-	} else {
-		NVT_LOG("register xiaomi_panel_notif successfully. ret=%d\n", ret);
 	}
 #elif IS_ENABLED(NVT_MSM_DRM_NOTIFY)
 	ts->drm_notif.notifier_call = nvt_drm_notifier_callback;
@@ -4190,13 +4248,6 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	xiaomitouch_register_modedata(0, &xiaomi_touch_interfaces);
 #endif
 
-#ifdef CONFIG_FACTORY_BUILD
-	ts->gesture_command = 4;
-	NVT_LOG("fac probe gesture_command is 4\n");
-#else
-	ts->gesture_command = 0;
-	NVT_LOG("not fac probe, gesture_command is 0\n");
-#endif
 /*P16 code for BUGP16-6610 by P-liaoxianguo at 2025/6/24 start*/
 #if NVT_SUPER_RESOLUTION
 	current_super_resolution = 1;
@@ -4206,7 +4257,6 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	mi_display_gesture_callback_register(mi_display_gesture_callback);
 /*P16 code for HQFEAT-89614 by liaoxianguo at 2025/4/3 end*/
 
-	bTouchIsAwake = 1;
 	NVT_LOG("end\n");
 
 	nvt_irq_enable(true);
@@ -4215,6 +4265,7 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
 err_register_xiaomi_panel_notif_failed:
+	xiaomi_unregister_panel_notifier_common(0);
 #elif IS_ENABLED(NVT_MSM_DRM_NOTIFY)
 	if (msm_drm_unregister_client(&ts->drm_notif))
 		NVT_ERR("Error occurred while unregistering drm_notifier.\n");
@@ -4235,6 +4286,7 @@ err_register_qcom_panel_event_failed:
 err_register_mtk_drm_failed:
 #endif
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
+err_register_touch_panel_common_failed:
 #if NVT_TOUCH_MP
 	nvt_mp_proc_deinit();
 err_mp_proc_init_failed:
@@ -4273,6 +4325,15 @@ err_create_nvt_reset_fw_status_wq_failed:
 	}
 err_create_nvt_charger_queue_failed:
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 end */
+#if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
+	xiaomi_unregister_panel_notifier_common(0);
+#endif
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	if (ts->touch_panel_registered) {
+		unregister_touch_panel_common(0);
+		ts->touch_panel_registered = false;
+	}
+#endif
 #if NVT_TOUCH_ESD_PROTECT
 	if (nvt_esd_check_wq) {
 		cancel_delayed_work_sync(&nvt_esd_check_work);
@@ -4327,7 +4388,6 @@ err_ckeck_full_duplex:
 		unregister_touch_panel_common(0);
 		ts->touch_panel_registered = false;
 	}
-err_register_touch_panel_common:
 #endif
 	if (ts->thp_frame_buf) {
 		kfree(ts->thp_frame_buf);
@@ -4369,13 +4429,8 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 	power_supply_unreg_notifier(&ts->charger_notifier);
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 end */
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
-	if (nvt_touch_resume_workqueue){
-		cancel_work_sync(&nvt_touch_resume_work);
-		destroy_workqueue(nvt_touch_resume_workqueue);
-	}
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
-	if (mi_disp_unregister_client(&ts->xiaomi_panel_notif))
-		NVT_ERR("Error occurred while unregistering xiaomi_panel_notif.\n");
+	xiaomi_unregister_panel_notifier_common(0);
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
 #elif IS_ENABLED(NVT_MSM_DRM_NOTIFY)
 	if (msm_drm_unregister_client(&ts->drm_notif))
@@ -4496,8 +4551,7 @@ static void nvt_ts_shutdown(struct spi_device *client)
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 end */
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
-	if (mi_disp_unregister_client(&ts->xiaomi_panel_notif))
-		NVT_ERR("Error occurred while unregistering xiaomi_panel_notif.\n");
+	xiaomi_unregister_panel_notifier_common(0);
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
 #elif IS_ENABLED(NVT_MSM_DRM_NOTIFY)
 	if (msm_drm_unregister_client(&ts->drm_notif))
@@ -4781,6 +4835,7 @@ static int32_t nvt_ts_resume(struct device *dev)
 			msecs_to_jiffies(NVT_TOUCH_ESD_CHECK_PERIOD));
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 	bTouchIsAwake = 1;
+	WRITE_ONCE(ts->display_suspend_ready, false);
 /*P16 code for BUGP16-2768 by xiongdejun at 2025/5/26 start*/
 	if(ts->ic_state == NVT_STATE_RESUME_IN){
 		ts->ic_state = NVT_STATE_RESUME_OUT;
@@ -4821,44 +4876,7 @@ static int32_t nvt_ts_resume(struct device *dev)
 
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
-static int nvt_xiaomi_panel_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
-{
-	struct mi_disp_notifier *evdata = data;
-	struct nvt_ts_data *ts =
-		container_of(self, struct nvt_ts_data, xiaomi_panel_notif);
-	int blank = 0;
-	int ret = 0;
-	NVT_LOG("nvt_xiaomi_panel_notifier_callback IN");
-	if (!(event == MI_DISP_DPMS_EARLY_EVENT ||
-		event == MI_DISP_DPMS_EVENT)) {
-		NVT_LOG("event(%lu) do not need process", event);
-		return 0;
-	}
-	if (evdata && evdata->data && ts) {
-/*P16 code for BUGP16-5761 by xiongdejun at 2025/6/17 start*/
-		flush_workqueue(nvt_touch_resume_workqueue);
-/*P16 code for BUGP16-5761 by xiongdejun at 2025/6/17 end*/
-		blank = *(int *)(evdata->data);
-		NVT_LOG("notifier tp event:%lu, code:%d.", event, blank);
-		if (event == MI_DISP_DPMS_EARLY_EVENT
-			&& (blank == MI_DISP_DPMS_POWERDOWN
-			|| blank == MI_DISP_DPMS_LP1
-			|| blank == MI_DISP_DPMS_LP2)) {
-			NVT_LOG("event:%lu,blank:%d", event, blank);
-			nvt_ts_suspend(&ts->client->dev);
-		} else if (event == MI_DISP_DPMS_EVENT && blank == MI_DISP_DPMS_ON) {
-			NVT_LOG("touchpanel resume, event:%lu,blank:%d", event, blank);
-			ret = queue_work(nvt_touch_resume_workqueue, &nvt_touch_resume_work);
-			if (!ret){
-				NVT_ERR("failed to queue resume work\n");
-				nvt_ts_resume(&ts->client->dev);
-			}
-		}
-	}
-
-	return 0;
-}
-/*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
+/* Display lifecycle is owned by xiaomi_touch_common. */
 #elif IS_ENABLED(NVT_MSM_DRM_NOTIFY)
 static int nvt_drm_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
 {
