@@ -39,6 +39,7 @@
 
 #include <drm/drm_panel.h>
 extern void dsi_panel_gesture_enable(bool enable);
+extern void nvt_ts_display_esd_flag(bool *esd_flag);
 #elif IS_ENABLED(NVT_MSM_DRM_NOTIFY)
 #include <linux/msm_drm_notify.h>
 #elif IS_ENABLED(NVT_FB_NOTIFY)
@@ -4640,6 +4641,10 @@ static int32_t nvt_ts_suspend(struct device *dev)
 #if MT_PROTOCOL_B
 	uint32_t i = 0;
 #endif
+	if (!bTouchIsAwake) {
+		NVT_LOG("Touch is already suspend\n");
+		return 0;
+	}
 /*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 start*/
 	ts->nvt_tool_in_use = false;
 /*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 end*/
@@ -4647,10 +4652,6 @@ static int32_t nvt_ts_suspend(struct device *dev)
 	ts->fod_rpt_slot_9 = false;
 	ts->fod_input_id = 0;
 /*P16 code for BUGP16-7431 by liuyupei at 2025/7/8 end*/
-	if (!bTouchIsAwake) {
-		NVT_LOG("Touch is already suspend\n");
-		return 0;
-	}
 	ts->ic_state = NVT_STATE_SUSPEND_IN;
 /*P16 code for BUGP16-5788 by xiongdejun at 2025/6/18 start*/
 	if ((ts->gesture_command & GESTURE_FOD_PRESS) == 0 && ts->fod_setting == 5) {
@@ -4697,11 +4698,6 @@ static int32_t nvt_ts_suspend(struct device *dev)
 	if (ts->gesture_command) {
 /*P16 code for BUGP16-1599 by xiongdejun at 2025/5/13 end*/
 		nvt_enable_gesture_mode(true);
-/*P16 code for BUGP16-420 by xiongdejun at 2025/5/16 start*/
-		if (enable_irq_wake(ts->client->irq)){
-			NVT_ERR("enable_irq_wake(irq:%d) fail", ts->client->irq);
-		}
-/*P16 code for BUGP16-420 by xiongdejun at 2025/5/16 end*/
 	} else {
 		nvt_enable_gesture_mode(false);
 	}
@@ -4714,6 +4710,7 @@ static int32_t nvt_ts_suspend(struct device *dev)
 /*P16 code for BUGP16-2768 by xiongdejun at 2025/5/26 end*/
 	bTouchIsAwake = 0;
 
+	msleep(50);
 	mutex_unlock(&ts->lock);
 
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
@@ -4753,7 +4750,6 @@ static int32_t nvt_ts_suspend(struct device *dev)
 		input_sync(ts->pen_input_dev);
 	}
 
-	msleep(50);
 /*P16 code for BUGP16-5004 by xiongdejun at 2025/6/20 start*/
 	if(ts->fod_finger) {
 		ts->fod_finger = false;
@@ -4776,18 +4772,19 @@ return:
 static int32_t nvt_ts_resume(struct device *dev)
 {
 	int32_t ret;
-/*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 start*/
-	ts->nvt_tool_in_use = false;
-/*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 end*/
+	bool display_esd_recovery = false;
+	bool reload_firmware = true;
+
+#if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
+	nvt_ts_display_esd_flag(&display_esd_recovery);
+#endif
 	if (bTouchIsAwake) {
-/*P16 code for HQFEAT-88864 by xiongdejun at 2025/4/2 start*/
-		mutex_lock(&ts->lock);
-		nvt_set_edge_reject_switch(edge_orientation_store);
-		mutex_unlock(&ts->lock);
-/*P16 code for HQFEAT-88864 by xiongdejun at 2025/4/2 end*/
 		NVT_LOG("Touch is already resume\n");
 		return 0;
 	}
+/*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 start*/
+	ts->nvt_tool_in_use = false;
+/*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 end*/
 	ts->ic_state = NVT_STATE_RESUME_IN;
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 	NVT_LOG("start, gesture_command:0x%02x, fod_finger: %d\n", ts->gesture_command, ts->fod_finger);
@@ -4810,17 +4807,24 @@ static int32_t nvt_ts_resume(struct device *dev)
 	gpio_set_value(ts->reset_gpio, 1);
 #endif
 
-	if (ts->gesture_command) {
-		NVT_LOG("skip download firmware\n");
-		nvt_check_fw_reset_state(RESET_STATE_REK);
-		nvt_set_gesture_switch(0x00);
-	} else {
-		if (nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false)) {
+	if (ts->fod_finger && !display_esd_recovery) {
+		ret = nvt_check_fw_reset_state(RESET_STATE_REK);
+		if (!ret) {
+			nvt_get_fw_info();
+			reload_firmware = false;
+		}
+	}
+
+	if (reload_firmware) {
+		if (nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, true)) {
 			NVT_ERR("download firmware failed, ignore check fw state\n");
 		} else {
 			nvt_check_fw_reset_state(RESET_STATE_REK);
 		}
 	}
+
+	if (ts->gesture_command)
+		nvt_set_gesture_switch(0x00);
 #if WAKEUP_GESTURE
 	if (ts->gesture_command == 0) {
 		nvt_irq_enable(true);
@@ -5028,6 +5032,18 @@ static int nvt_mtk_drm_notifier_callback(struct notifier_block *nb,
 #if NVT_PM_WAIT_BUS_RESUME_COMPLETE
 static int nvt_ts_pm_suspend(struct device *dev)
 {
+	int ret;
+
+	if (device_may_wakeup(dev) && ts->gesture_command &&
+	    !ts->irq_wake_enabled) {
+		ret = enable_irq_wake(ts->client->irq);
+		if (ret)
+			NVT_ERR("enable_irq_wake(irq:%d) failed: %d\n",
+				ts->client->irq, ret);
+		else
+			ts->irq_wake_enabled = true;
+	}
+
 	ts->dev_pm_suspend = true;
 	reinit_completion(&ts->dev_pm_resume_completion);
 
@@ -5036,6 +5052,17 @@ static int nvt_ts_pm_suspend(struct device *dev)
 
 static int nvt_ts_pm_resume(struct device *dev)
 {
+	int ret;
+
+	if (ts->irq_wake_enabled) {
+		ret = disable_irq_wake(ts->client->irq);
+		if (ret)
+			NVT_ERR("disable_irq_wake(irq:%d) failed: %d\n",
+				ts->client->irq, ret);
+		else
+			ts->irq_wake_enabled = false;
+	}
+
 	ts->dev_pm_suspend = false;
 	complete(&ts->dev_pm_resume_completion);
 
