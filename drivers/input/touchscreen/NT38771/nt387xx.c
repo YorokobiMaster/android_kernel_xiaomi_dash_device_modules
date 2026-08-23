@@ -160,6 +160,8 @@ static int current_super_resolution;
 #endif
 /*P16 code for BUGP16-6610 by P-liaoxianguo at 2025/6/24 end*/
 #if WAKEUP_GESTURE
+static uint32_t gesture_id_31_invalid_cnt;
+
 const uint16_t gesture_key_array[] = {
 	KEY_POWER,  //GESTURE_WORD_C
 	KEY_POWER,  //GESTURE_WORD_W
@@ -1434,6 +1436,8 @@ void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
 	uint32_t keycode = 0;
 	uint8_t func_type = data[2];
 	uint8_t func_id = data[3];
+	uint8_t gesture_status[5] = {0};
+	uint32_t gesture_status_addr;
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 	uint8_t fod_status = 0;
 	uint32_t input_x = 0;
@@ -1444,8 +1448,32 @@ void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
 		gesture_id = func_id;
 	} else if (gesture_id > DATA_PROTOCOL) {
 		NVT_ERR("gesture_id %d is invalid, func_type=%d, func_id=%d\n", gesture_id, func_type, func_id);
+		if (gesture_id == 31 && func_type == 0xFF && func_id == 0xFF) {
+			gesture_id_31_invalid_cnt++;
+			if (gesture_id_31_invalid_cnt >= 10) {
+				gesture_id_31_invalid_cnt = 0;
+				if (ts->nvt_tool_in_use) {
+					NVT_ERR("NVT tool in use, skip gesture recovery.\n");
+					return;
+				}
+
+				gesture_status_addr = ts->mmap->EVENT_BUF_ADDR + 0x5C;
+				nvt_set_page(gesture_status_addr);
+				gesture_status[0] = gesture_status_addr & 0x7F;
+				CTP_SPI_READ(ts->client, gesture_status,
+						sizeof(gesture_status));
+				NVT_ERR("gesture status 0x%X: %02X %02X %02X %02X\n",
+						gesture_status_addr, gesture_status[1],
+						gesture_status[2], gesture_status[3],
+						gesture_status[4]);
+				nvt_read_fw_history_all();
+				nvt_set_gesture_switch(
+						(uint8_t)(ts->gesture_command & 0xFF));
+			}
+		}
 		return;
 	}
+	gesture_id_31_invalid_cnt = 0;
 
 	NVT_LOG("gesture_id = %d\n", gesture_id);
 
@@ -4708,6 +4736,9 @@ static int32_t nvt_ts_suspend(struct device *dev)
 		ts->ic_state = NVT_STATE_SUSPEND_OUT;
 	}
 /*P16 code for BUGP16-2768 by xiongdejun at 2025/5/26 end*/
+#if WAKEUP_GESTURE
+	gesture_id_31_invalid_cnt = 0;
+#endif
 	bTouchIsAwake = 0;
 
 	msleep(50);
