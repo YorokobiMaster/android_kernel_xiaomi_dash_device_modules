@@ -130,6 +130,9 @@ static void nvt_set_gesture_mode(int value);
 /* P16 code for HQFEAT-94432 by p-liaoxianguo at 2025/3/27 start */
 static int32_t nvt_ts_resume(struct device *dev);
 static int32_t nvt_ts_suspend(struct device *dev);
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+static void nvt_fod_attn_status_recovery(void);
+#endif
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
 static struct drm_panel *active_panel;
 /* P16 code for HQFEAT-94432 by p-liaoxianguo at 2025/3/27 end */
@@ -1581,7 +1584,9 @@ void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
 							if(!ts->fod_finger) {
 								NVT_LOG("Gesture : FOD Down, input_x=%d, input_y=%d.\n", input_x, input_y);
 							}
-							nvt_ts_fod_down_report(input_x, input_y);
+							nvt_ts_fod_down_report(
+								input_x * SUPER_RESOLUTION_FACOTR,
+								input_y * SUPER_RESOLUTION_FACOTR);
 						} else if (fod_status == FOD_UP) {
 							if (ts->fod_finger) {
 								NVT_LOG("Gesture : FOD Up, fod_id:%d\n", TOUCH_FOD_ID);
@@ -1609,7 +1614,7 @@ void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
 #endif
 
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
-void nvt_ts_fod_down_report(uint16_t fod_x, uint16_t fod_y)
+void nvt_ts_fod_down_report(uint32_t fod_x, uint32_t fod_y)
 {
 	update_fod_press_status(1);
 	ts->fod_finger = true;
@@ -2072,6 +2077,9 @@ static void nvt_fw_reload_recovery(void)
 	/*P16 code for BUGP16-8567 by liuyupei at 2025/7/23 start*/
 	if (bTouchIsAwake) {
 		nvt_set_gesture_switch(0x00);
+	#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+		nvt_fod_attn_status_recovery();
+	#endif
 	}
 	/*P16 code for BUGP16-8567 by liuyupei at 2025/7/23 end*/
 
@@ -3191,6 +3199,11 @@ static int nvt_set_cur_value(int nvt_mode, int nvt_value)
 		return 0;
 	}
 /*P16 code for BUGP16-5788 by xiongdejun at 2025/6/18 end*/
+	if (nvt_mode == Touch_Fingerprint_Auth_State && nvt_value >= 0) {
+		ts->fingerprint_auth_state = nvt_value;
+		NVT_LOG("fingerprint AuthState = %d", nvt_value);
+		return 0;
+	}
 /* P16 code for BUGP16-3861 by p-liaoxianguo at 2025/5/26 end */
 /*P16 code for HQFEAT-89543 by xiongdejun at 2025/6/20 start*/
 	if (nvt_mode == Touch_Expert_Mode && nvt_value >=0){
@@ -3467,6 +3480,68 @@ static int nvt_thp_ic_get_mode(common_data_t *data)
 	return ret;
 }
 
+static int nvt_xm_htc_set_fod_attn_status(uint16_t status)
+{
+	int ret;
+
+	NVT_LOG("set fod_attn_status: %u\n", status);
+	ret = nvt_set_extend_custom_cmd(0x28, status);
+	if (ret < 0)
+		NVT_ERR("set fod_attn_status failed: %d\n", ret);
+
+	return ret;
+}
+
+static void nvt_xiaomi_touch_fod_attn_test(int value)
+{
+	uint16_t status = 0;
+
+	if (!ts || ts->nvt_tool_in_use ||
+	    READ_ONCE(ts->display_suspend_ready))
+		return;
+
+	mutex_lock(&ts->lock);
+	if (value >= 0 && value <= 5)
+		nvt_xm_htc_set_fod_attn_status(value);
+	else if (value == 6) {
+		if (!nvt_get_extend_custom_cmd(0x28, &status))
+			NVT_LOG("fod_attn_status = %u\n", status);
+	} else {
+		NVT_ERR("invalid fod_attn_test value: %d\n", value);
+	}
+	mutex_unlock(&ts->lock);
+}
+
+static void nvt_xiaomi_touch_fod_low_attn(int value)
+{
+	if (!ts || ts->nvt_tool_in_use ||
+	    READ_ONCE(ts->display_suspend_ready))
+		return;
+
+	mutex_lock(&ts->lock);
+	if (value == 1) {
+		nvt_xm_htc_set_fod_attn_status(2);
+		ts->fod_low_attn = 0;
+	} else if (value == 0) {
+		nvt_xm_htc_set_fod_attn_status(3);
+		ts->fod_low_attn = 1;
+	} else {
+		NVT_ERR("invalid fod_low_attn value: %d\n", value);
+	}
+	mutex_unlock(&ts->lock);
+}
+
+static void nvt_fod_attn_status_recovery(void)
+{
+	if (ts->fod_low_attn) {
+		nvt_xm_htc_set_fod_attn_status(3);
+	} else if (ts->fod_attn_status == 1) {
+		nvt_xm_htc_set_fod_attn_status(4);
+	} else if (ts->fod_attn_status == 0 && !ts->fod_finger) {
+		nvt_xm_htc_set_fod_attn_status(5);
+	}
+}
+
 static int nvt_set_thp_cur_value(int mode, int *values)
 {
 	int value;
@@ -3474,6 +3549,28 @@ static int nvt_set_thp_cur_value(int mode, int *values)
 
 	if (!ts || !values)
 		return -ENODEV;
+	if (mode == THP_FOD_DOWNUP_CTL) {
+		value = !!values[0];
+		ts->thp_fod_downup = value;
+		input_report_key(ts->input_dev, BTN_INFO, value);
+		input_sync(ts->input_dev);
+		NVT_LOG("THP_FOD_DOWNUP_CTL=%d\n", value);
+		return update_fod_press_status(value);
+	}
+	if (mode == THP_FOD_ATTN_STATUS) {
+		if (ts->nvt_tool_in_use || ts->fod_low_attn)
+			return 0;
+
+		value = values[0];
+		if (value < 0 || value > 1)
+			return -EINVAL;
+
+		mutex_lock(&ts->lock);
+		ts->fod_attn_status = value;
+		ret = nvt_xm_htc_set_fod_attn_status(value ? 4 : 5);
+		mutex_unlock(&ts->lock);
+		return ret;
+	}
 	if (mode != THP_LOCK_SCAN_MODE)
 		return -EOPNOTSUPP;
 
@@ -3533,6 +3630,8 @@ static const hardware_operation_t nvt_hardware_operation = {
 	.htc_ic_set_mode_value = nvt_thp_ic_set_mode,
 	.htc_ic_get_mode_value = nvt_thp_ic_get_mode,
 	.resume_suspend = nvt_ts_resume_suspend,
+	.fod_attn_test = nvt_xiaomi_touch_fod_attn_test,
+	.fod_low_attn = nvt_xiaomi_touch_fod_low_attn,
 };
 
 static int nvt_register_touch_panel_common(struct device *dev)
@@ -4784,8 +4883,13 @@ static int32_t nvt_ts_suspend(struct device *dev)
 /*P16 code for BUGP16-5004 by xiongdejun at 2025/6/20 start*/
 	if(ts->fod_finger) {
 		ts->fod_finger = false;
-		nvt_ts_fod_up_report();
-		NVT_LOG("fod up for suspend. \n");
+		if (ts->fingerprint_auth_state == 0) {
+			update_fod_press_status(0);
+			NVT_LOG("fingerprint AuthState 0 update_fod_press_status\n");
+		} else {
+			NVT_LOG("fingerprint AuthState %d means wrong fingerprint, skip\n",
+				ts->fingerprint_auth_state);
+		}
 	}
 /*P16 code for BUGP16-5004 by xiongdejun at 2025/6/20 end*/
 	NVT_LOG("end\n");
@@ -4851,6 +4955,9 @@ static int32_t nvt_ts_resume(struct device *dev)
 			NVT_ERR("download firmware failed, ignore check fw state\n");
 		} else {
 			nvt_check_fw_reset_state(RESET_STATE_REK);
+	#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+			nvt_fod_attn_status_recovery();
+	#endif
 		}
 	}
 

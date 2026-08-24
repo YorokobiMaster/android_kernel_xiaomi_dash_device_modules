@@ -123,7 +123,8 @@ enum common_data_mode {
 	Touch_Suspend					= 27,
 	Touch_Hand_Detect_Result		= 28,
 	Touch_Fod_Setting				= 35,
-	Touch_Mode_NUM					= 36,
+	Touch_Fingerprint_Auth_State	= 41,
+	Touch_Mode_NUM					= 42,
 	TOUCH_CLOUD_MODE_WATER_PROOF	= 100,
 	Touch_Boost_EN					= TOUCH_MOTION_BASE + 0,
 	Touch_Empty_Int					= TOUCH_MOTION_BASE + 1,
@@ -173,6 +174,7 @@ enum common_data_mode {
 	THP_Y_RES						= THP_CMD_BASE + 38,
 	THP_TX_NUM						= THP_CMD_BASE + 39,
 	THP_RX_NUM						= THP_CMD_BASE + 40,
+	THP_FOD_ATTN_STATUS				= THP_CMD_BASE + 112,
 	THP_PRINT_DIF1_EN				= THP_CMD_BASE + 41,
 	THP_STANDARDT_RAW				= THP_CMD_BASE + 42,
 	THP_STANDARDT_DIF1				= THP_CMD_BASE + 43,
@@ -254,9 +256,9 @@ typedef struct hardware_operation {
 	void (*set_charge_state)(void);
 	void (*limit_version_read)(void);
 	void (*reserved_d0)(void);
-	void (*fod_test)(void);
-	void (*fod_attn_test)(void);
-	void (*fod_low_attn)(void);
+	void (*fod_test)(int value);
+	void (*fod_attn_test)(int value);
+	void (*fod_low_attn)(int value);
 	void (*set_thermal_temp)(void);
 } hardware_operation_t;
 typedef struct hardware_param {

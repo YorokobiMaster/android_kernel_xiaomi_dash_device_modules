@@ -349,6 +349,10 @@ struct nvt_ts_data {
 /* P16 code for HQFEAT-94432 by p-liaoxianguo at 2025/4/29 end */
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 	bool fod_finger;
+	bool thp_fod_downup;
+	int fod_low_attn;
+	int fod_attn_status;
+	int fingerprint_auth_state;
 /*P16 code for HQFEAT-89614 by liaoxianguo at 2025/4/3 start*/
 #ifndef CONFIG_FACTORY_BUILD
 	struct workqueue_struct *nvt_reset_fw_status_wq;
@@ -420,7 +424,7 @@ extern void set_nvt_gesture_flag_tianma(bool en);
 /*P16 code for HQFEAT-102772 by xiongdejun at 2025/4/30 end*/
 extern void set_nvt_gesture_flag_vox(bool en);
 extern int update_fod_press_status(int value);
-void nvt_ts_fod_down_report(uint16_t fod_x, uint16_t fod_y);
+void nvt_ts_fod_down_report(uint32_t fod_x, uint32_t fod_y);
 void nvt_ts_fod_up_report(void);
 int32_t nvt_set_gesture_switch(uint8_t gesture_switch);
 int32_t nvt_set_extend_custom_cmd(uint8_t command, uint16_t value);

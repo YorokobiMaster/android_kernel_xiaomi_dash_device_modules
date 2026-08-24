@@ -2210,6 +2210,36 @@ static ssize_t fod_test_store(struct device *dev,
 	pr_info("%s value:%d\n", __func__, value);
 	return count;
 }
+
+static ssize_t fod_attn_test_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	int value;
+	struct xiaomi_touch_panel_data *panel = &touch_panel_data[0];
+
+	if (!panel->registered || !panel->hardware_operation.fod_attn_test)
+		return -EOPNOTSUPP;
+	if (kstrtoint(buf, 10, &value))
+		return -EINVAL;
+
+	panel->hardware_operation.fod_attn_test(value);
+	return count;
+}
+
+static ssize_t fod_low_attn_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	int value;
+	struct xiaomi_touch_panel_data *panel = &touch_panel_data[0];
+
+	if (!panel->registered || !panel->hardware_operation.fod_low_attn)
+		return -EOPNOTSUPP;
+	if (kstrtoint(buf, 10, &value))
+		return -EINVAL;
+
+	panel->hardware_operation.fod_low_attn(value);
+	return count;
+}
 /*P16 code for HQFEAT-89149 by xiongdejun at 2024/4/25 start*/
 static ssize_t touch_dfs_test_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -2348,6 +2378,10 @@ static DEVICE_ATTR(touch_thp_preset_point, (S_IRUGO | S_IWUSR | S_IWGRP), touch_
 static DEVICE_ATTR(resolution_factor, 0644, resolution_factor_show, NULL);
 static DEVICE_ATTR(touch_ic_buffer, (S_IRUGO | S_IWUSR | S_IWGRP),touch_ic_buffer_show, NULL);
 static DEVICE_ATTR(fod_test, (S_IRUGO | S_IWUSR | S_IWGRP), NULL, fod_test_store);
+static DEVICE_ATTR(fod_attn_test, (S_IRUGO | S_IWUSR | S_IWGRP), NULL,
+			fod_attn_test_store);
+static DEVICE_ATTR(fod_low_attn, (S_IRUGO | S_IWUSR | S_IWGRP), NULL,
+			fod_low_attn_store);
 static DEVICE_ATTR(touch_dfs_test, (0664), touch_dfs_test_show, touch_dfs_test_store);
 static struct attribute *touch_attr_group[] = {
 	&dev_attr_abnormal_event.attr,
@@ -2389,6 +2423,8 @@ static struct attribute *touch_attr_group[] = {
 	&dev_attr_touch_irq_no.attr,
 	&dev_attr_touch_finger_status.attr,
 	&dev_attr_resolution_factor.attr,
+	&dev_attr_fod_attn_test.attr,
+	&dev_attr_fod_low_attn.attr,
 	&dev_attr_touch_sensor.attr,
 	&dev_attr_touch_sensor_ctrl.attr,
 	&dev_attr_touch_thp_mem_notify.attr,
