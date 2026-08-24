@@ -1,5 +1,12 @@
 menu "Device Drivers"
 
+config XIAOMI_FINGERPRINT
+	tristate "Xiaomi fingerprint transport"
+	depends on OF && INPUT
+	help
+	  Xiaomi fingerprint platform transport used by the Goodix and QBT
+	  userspace HALs. It exposes xiaomi-fp, mifp_id and qbt_ipc devices.
+
 config SILEAD_FP
 	tristate "Silead Fingerprint driver support"
 	help

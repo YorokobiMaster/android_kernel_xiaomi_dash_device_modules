@@ -1213,6 +1213,7 @@ def get_overlay_modules_list():
         mgk_64_device_modules.append("drivers/misc/xiaomi/mpbe/mpbe.ko")
 
     if "dash" in DEFCONFIG_OVERLAYS:
+        mgk_64_device_modules.append("drivers/input/fingerprint/xiaomi_spi_tee.ko")
         mgk_64_device_modules.remove("drivers/input/misc/aw_haptic/haptic.ko")
         mgk_64_device_modules.remove("drivers/input/misc/aac_haptic/aac_haptic.ko")
         mgk_64_device_modules.remove("sound/soc/codecs/tfa98xx/snd-soc-tfa98xx.ko")
