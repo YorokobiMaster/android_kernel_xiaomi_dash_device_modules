@@ -4,6 +4,7 @@
 #
 
 menu "Xiaomi Misc devices"
+source "$(KCONFIG_EXT_PREFIX)drivers/misc/xiaomi/hwid/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/misc/xiaomi/miev/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/misc/xiaomi/build_product_name/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/misc/xiaomi/mi_t1_chip/Kconfig"

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Copyright (C) 2026 YorokobiMaster (GitHub: @YorokobiMaster)
+
+config XIAOMI_HWID
+	tristate "Xiaomi hardware ID compatibility interface"
+	help
+	  Expose bootloader-provided Xiaomi project and hardware revision data
+	  through read-only module parameters and exported kernel functions.

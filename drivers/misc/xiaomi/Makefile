@@ -3,6 +3,8 @@
 # Xiaomi for misc devices.
 #
 
+obj-$(CONFIG_XIAOMI_HWID) += hwid/
+
 obj-$(CONFIG_MIEV) += miev/
 
 obj-$(CONFIG_MI_WIFI_GPIO) += wifi_gpio/
