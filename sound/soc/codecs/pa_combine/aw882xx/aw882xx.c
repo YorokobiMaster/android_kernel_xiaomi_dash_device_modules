@@ -389,6 +389,123 @@ static void aw882xx_shutdown(struct snd_pcm_substream *substream,
 	}
 }
 
+#define AW2329_CHIP_ID			0x2329
+#define AW2329_STEP_DB_NUMERATOR	1505
+#define AW2329_STEP_DB_DENOMINATOR	16000
+#define MTK_HANDSET_GAIN_MAX_INDEX	19
+#define MTK_HANDSET_GAIN_LAST_LINEAR	18
+#define MTK_HANDSET_GAIN_MIN_DB		48
+
+static bool aw882xx_is_receiver_profile(struct aw882xx *aw882xx)
+{
+	char *name = aw882xx_dev_get_prof_name(aw882xx->aw_pa,
+					aw882xx->aw_pa->set_prof);
+
+	return name && !strcmp(name, "Receiver");
+}
+
+static unsigned int aw882xx_handset_gain_to_volume(unsigned int index)
+{
+	unsigned int attenuation_db;
+
+	if (index <= MTK_HANDSET_GAIN_LAST_LINEAR)
+		attenuation_db = index;
+	else
+		attenuation_db = MTK_HANDSET_GAIN_MIN_DB;
+
+	return DIV_ROUND_CLOSEST(attenuation_db *
+		AW2329_STEP_DB_DENOMINATOR, AW2329_STEP_DB_NUMERATOR);
+}
+
+/* Caller holds aw882xx->lock. */
+static void aw882xx_apply_handset_gain(struct aw882xx *aw882xx,
+					bool write_hw)
+{
+	struct aw_volume_desc *desc = &aw882xx->aw_pa->volume_desc;
+	unsigned int volume;
+
+	if (!aw882xx->handset_gain_compat ||
+		aw882xx->aw_pa->chip_id != AW2329_CHIP_ID ||
+		!aw882xx_is_receiver_profile(aw882xx))
+		return;
+
+	volume = aw882xx_handset_gain_to_volume(
+		aw882xx->handset_gain_index);
+	desc->ctl_volume = volume;
+
+	if (!write_hw)
+		return;
+
+	volume = AW_GET_MAX_VALUE(volume, desc->monitor_volume);
+	aw882xx_dev_set_volume(aw882xx->aw_pa, volume);
+}
+
+static int aw882xx_handset_gain_info(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_info *uinfo)
+{
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+	uinfo->count = 2;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = MTK_HANDSET_GAIN_MAX_INDEX;
+
+	return 0;
+}
+
+static int aw882xx_handset_gain_get(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	aw_snd_soc_codec_t *codec =
+		aw_componet_codec_ops.kcontrol_codec(kcontrol);
+	struct aw882xx *aw882xx =
+		aw_componet_codec_ops.codec_get_drvdata(codec);
+
+	mutex_lock(&aw882xx->lock);
+	ucontrol->value.integer.value[0] = aw882xx->handset_gain_index;
+	ucontrol->value.integer.value[1] = aw882xx->handset_gain_index;
+	mutex_unlock(&aw882xx->lock);
+
+	return 0;
+}
+
+static int aw882xx_handset_gain_put(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	aw_snd_soc_codec_t *codec =
+		aw_componet_codec_ops.kcontrol_codec(kcontrol);
+	struct aw882xx *aw882xx =
+		aw_componet_codec_ops.codec_get_drvdata(codec);
+	unsigned int left = ucontrol->value.integer.value[0];
+	unsigned int right = ucontrol->value.integer.value[1];
+	bool changed;
+
+	if (left > MTK_HANDSET_GAIN_MAX_INDEX ||
+		right > MTK_HANDSET_GAIN_MAX_INDEX)
+		return -EINVAL;
+
+	if (left != right) {
+		dev_warn(aw882xx->dev,
+			"reject unequal handset gain indices %u/%u",
+			left, right);
+		return -EINVAL;
+	}
+
+	mutex_lock(&aw882xx->lock);
+	changed = aw882xx->handset_gain_index != left;
+	aw882xx->handset_gain_index = left;
+	aw882xx_apply_handset_gain(aw882xx, aw882xx->aw_pa->status);
+	mutex_unlock(&aw882xx->lock);
+
+	return changed;
+}
+
+static const struct snd_kcontrol_new aw882xx_handset_gain_control = {
+	.name = "Handset_PGA_GAIN",
+	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+	.info = aw882xx_handset_gain_info,
+	.get = aw882xx_handset_gain_get,
+	.put = aw882xx_handset_gain_put,
+};
+
 static void aw882xx_start_pa(struct aw882xx *aw882xx)
 {
 	int ret;
@@ -419,6 +536,8 @@ static void aw882xx_start_pa(struct aw882xx *aw882xx)
 				aw_dev_err(aw882xx->dev, "fw update failed, cnt:%d", i);
 				continue;
 			}
+
+			aw882xx_apply_handset_gain(aw882xx, true);
 
 			ret = aw882xx_device_start(aw882xx->aw_pa);
 			if (ret) {
@@ -1165,6 +1284,7 @@ static int aw882xx_dynamic_create_controls(struct aw882xx *aw882xx)
 {
 	struct snd_kcontrol_new *aw882xx_dev_control = NULL;
 	char *kctl_name = NULL;
+	int ret;
 
 	aw882xx_dev_control = devm_kzalloc(aw882xx->codec->dev,
 				sizeof(struct snd_kcontrol_new) * AW_KCTL_NUM, GFP_KERNEL);
@@ -1296,6 +1416,19 @@ static int aw882xx_dynamic_create_controls(struct aw882xx *aw882xx)
 	aw_componet_codec_ops.add_codec_controls(aw882xx->codec,
 						aw882xx_dev_control, AW_KCTL_NUM);
 
+	if (aw882xx->handset_gain_compat) {
+		if (aw882xx->aw_pa->chip_id != AW2329_CHIP_ID) {
+			aw_dev_err(aw882xx->dev,
+				"handset gain compatibility requires AW2329");
+			return -EINVAL;
+		}
+
+		ret = aw_componet_codec_ops.add_codec_controls(aw882xx->codec,
+					&aw882xx_handset_gain_control, 1);
+		if (ret)
+			return ret;
+	}
+
 	return 0;
 }
 
@@ -1385,7 +1518,12 @@ static void aw882xx_request_firmware(struct work_struct *work)
 	}
 
 	/*create kcontrol by profile*/
-	aw882xx_dynamic_create_controls(aw882xx);
+	ret = aw882xx_dynamic_create_controls(aw882xx);
+	if (ret) {
+		aw_dev_err(aw882xx->dev, "create controls failed: %d", ret);
+		mutex_unlock(&aw882xx->lock);
+		return;
+	}
 
 	aw882xx->fw_status = AW_DEV_FW_OK;
 	aw882xx->fw_retry_cnt = 0;
@@ -1451,6 +1589,8 @@ static void aw882xx_irq_restart(struct aw882xx *aw882xx)
 		}
 
 		if (aw882xx->allow_pw && aw882xx->pstream) {
+			aw882xx_apply_handset_gain(aw882xx, true);
+
 			ret = aw882xx_device_start(aw882xx->aw_pa);
 			if (ret) {
 				aw_dev_err(aw882xx->dev, "start failed");
@@ -2416,6 +2556,9 @@ static int aw882xx_parse_dt(struct device *dev, struct aw882xx *aw882xx,
 	}
 
 	aw882xx->phase_sync = sync_enable;
+
+	aw882xx->handset_gain_compat = of_property_read_bool(np,
+		"awinic,mtk-handset-pga-gain-compat");
 
 	aw882xx_parse_rename_flag_dt(aw882xx);
 	aw882xx_parse_sync_load_dt(aw882xx);
