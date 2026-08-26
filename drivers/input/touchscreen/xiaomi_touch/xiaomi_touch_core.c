@@ -2138,7 +2138,10 @@ static ssize_t resolution_factor_show(struct device *dev,
 	int factor = 1;
 	if (!touch_pdata)
 		return -ENODEV;
-	if (touch_pdata->touch_data[0]->get_touch_super_resolution_factor){
+	if (touch_panel_data[0].registered) {
+		factor = touch_panel_data[0].hardware_param.super_resolution_factor;
+		mi_ts_info("enter resolution_factor_show factor %d", factor);
+	} else if (touch_pdata->touch_data[0]->get_touch_super_resolution_factor){
 		factor = touch_pdata->touch_data[0]->get_touch_super_resolution_factor();
 		mi_ts_info("enter resolution_factor_show factor %d", factor);
 	}
