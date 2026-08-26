@@ -331,7 +331,6 @@ static int foursemi_i2c_probe(struct i2c_client *i2c)//, const struct i2c_device
 	struct input_dev *input_dev;
 	struct ff_device *ff;
 	struct device_node *np = i2c->dev.of_node;
-	int effect_count_max;
 	int irq_flags = 0;
 	int ret = -1;
 	int rc = 0;
@@ -530,16 +529,18 @@ static int foursemi_i2c_probe(struct i2c_client *i2c)//, const struct i2c_device
 			input_set_capability(input_dev, EV_FF, FF_CUSTOM);
 		}
 
-		if (foursemi->fs3002->effects_count + 1 > FF_EFFECT_COUNT_MAX)
-			effect_count_max = foursemi->fs3002->effects_count + 1;
-		else
-			effect_count_max = FF_EFFECT_COUNT_MAX;
-
-		rc = input_ff_create(input_dev, effect_count_max);
+		rc = input_ff_create(input_dev, 1);
 		if (rc < 0) 
 		{
 			pr_err("%s create FF input device failed, rc=%d\n", FSERROR, rc);
 			goto err_fs3002_input_ff;
+		}
+
+		ret = create_rb();
+		if (ret < 0)
+		{
+			pr_err("%s error creating ringbuffer\n", FSERROR);
+			goto fs3002_destroy_ff;
 		}
 
 		INIT_WORK(&foursemi->fs3002->set_gain_work, fs3002_haptic_ff_set_gain_work_routine);
@@ -548,11 +549,14 @@ static int foursemi_i2c_probe(struct i2c_client *i2c)//, const struct i2c_device
 		ff->playback = fs3002_haptics_playback;
 		ff->erase = fs3002_haptics_erase;
 		ff->set_gain = fs3002_haptic_ff_set_gain;
+		dev_set_drvdata(&i2c->dev, foursemi);
+		g_foursemi = foursemi;
 		rc = input_register_device(input_dev);
-		if (rc < 0) 
+		if (rc < 0)
 		{
 			pr_err("%s register input device failed, rc=%d\n", FSERROR, rc);
-			goto fs3002_destroy_ff;
+			g_foursemi = NULL;
+			goto err_rb;
 		}
 	} 
 	else 
@@ -560,20 +564,10 @@ static int foursemi_i2c_probe(struct i2c_client *i2c)//, const struct i2c_device
 		goto err_parse_dt;
 	}
 
-	dev_set_drvdata(&i2c->dev, foursemi);
-	g_foursemi = foursemi;
-	
-	ret =  create_rb();
-	if (ret < 0) 
-	{
-		pr_err("%s error creating ringbuffer\n", FSERROR);
-		goto err_rb;
-	}
-
 	pr_info("probe completed successfully!\n");
 	return 0;
 err_rb:
-
+	release_rb();
 fs3002_destroy_ff:
 	if (foursemi->name == FS3002_A1 || foursemi->name == FS3002_A2 || foursemi->name == FS3002_A3)
 		input_ff_destroy(foursemi->fs3002->input_dev);
@@ -639,6 +633,11 @@ static void foursemi_i2c_remove(struct i2c_client *i2c)
 		foursemi->fs3002->start_buf = NULL;
 #endif		
 		sysfs_remove_group(&i2c->dev.kobj, &fs3002_vibrator_attribute_group);
+		foursemi->fs3002->state = 0;
+		atomic_set(&foursemi->fs3002->exit_in_rtp_loop, 1);
+		rb_force_exit();
+		wake_up_interruptible(&foursemi->fs3002->stop_wait_q);
+		flush_workqueue(foursemi->fs3002->work_queue);
 		devm_free_irq(&i2c->dev, gpio_to_irq(foursemi->fs3002->irq_gpio), foursemi->fs3002);
 		if (gpio_is_valid(foursemi->fs3002->irq_gpio))
 		{
@@ -648,11 +647,8 @@ static void foursemi_i2c_remove(struct i2c_client *i2c)
 		{
 			//devm_gpio_free(&i2c->dev, foursemi->fs3002->reset_gpio);
 		}
-		if (foursemi->fs3002 != NULL) 
-		{
-			flush_workqueue(foursemi->fs3002->work_queue);
+		if (foursemi->fs3002 != NULL)
 			destroy_workqueue(foursemi->fs3002->work_queue);
-		}
 		
 		devm_kfree(&i2c->dev, foursemi->fs3002);
 		foursemi->fs3002 = NULL;

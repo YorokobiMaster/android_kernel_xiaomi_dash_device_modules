@@ -28,6 +28,8 @@
 #include "ringbuffer.h"
 #include "fs3002.h"
 
+#define FS3002_MIN(x, y) ((x) < (y) ? (x) : (y))
+
 #define FS3002_BROADCAST_ADDR			(0x00)
 #define FS3002_LEFT_CHIP_ADDR			(0x5A)
 #define FS3002_RIGHT_CHIP_ADDR			(0x5B)
@@ -3265,9 +3267,24 @@ int fs3002_haptics_erase(struct input_dev *dev, int effect_id)
 		return 0;
 
 	pr_debug("%s: enter\n", __func__);
+	fs3002->state = 0;
+	if (atomic_read(&fs3002->is_in_rtp_loop))
+		atomic_set(&fs3002->exit_in_rtp_loop, 1);
+	rb_force_exit();
+	wake_up_interruptible(&fs3002->stop_wait_q);
+	cancel_work_sync(&fs3002->rtp_work);
+	cancel_work_sync(&fs3002->vibrate_work);
+	atomic_set(&fs3002->exit_in_rtp_loop, 0);
+	wake_up_interruptible(&fs3002->stop_wait_q);
+
+	mutex_lock(&fs3002->lock);
+	fs3002_haptic_stop(fs3002);
 	fs3002->effect_type = 0;
+	fs3002->effect_id = 0;
+	fs3002->activate_mode = 0;
 	fs3002->is_custom_wave = 0;
 	fs3002->duration = 0;
+	mutex_unlock(&fs3002->lock);
 	return rc;
 }
 
@@ -4479,7 +4496,7 @@ static ssize_t fs3002_custom_wave_store(struct device *dev, struct device_attrib
 
 	while (count > 0) 
 	{
-		buf_len = MIN(count, period_size);
+		buf_len = FS3002_MIN(count, period_size);
 		ret = write_rb(buf + offset,  buf_len);
 		if (ret < 0)
 			goto exit;
@@ -6695,9 +6712,13 @@ int fs3002_haptics_playback(struct input_dev *dev, int effect_id, int val)
 	{
 		fs3002->state = 1;
 	}
-	if (val <= 0)
+	else
 	{
 		fs3002->state = 0;
+		if (atomic_read(&fs3002->is_in_rtp_loop))
+			atomic_set(&fs3002->exit_in_rtp_loop, 1);
+		rb_force_exit();
+		wake_up_interruptible(&fs3002->stop_wait_q);
 	}
 	hrtimer_cancel(&fs3002->timer);
 
@@ -6721,13 +6742,6 @@ int fs3002_haptics_playback(struct input_dev *dev, int effect_id, int val)
 		sprintf(str,"%s,enter  rtp_mode\n",__func__);
 		fs3002_debug_message(fs3002,str);
 		queue_work(fs3002->work_queue, &fs3002->rtp_work);
-		//if we are in the play mode, force to exit
-		if (val == 0) 
-		{
-			atomic_set(&fs3002->exit_in_rtp_loop, 1);
-			rb_force_exit();
-			wake_up_interruptible(&fs3002->stop_wait_q);			
-		}
 	} 
 	else 
 	{
@@ -6827,10 +6841,10 @@ static void fs3002_rtp_work_routine(struct work_struct *work)
 	if (fs3002->is_custom_wave == 1 && fs3002->state) 
 	{
 		pr_info("is_custom_wave == 1 and fs3002->state, buffer size %d, availbe size %d\n", fs3002->ram.base_addr >> 2, get_rb_avalible_size());
-		while (get_rb_avalible_size() < fs3002->ram.base_addr && !rb_shoule_exit()) 
+		while (fs3002->state && get_rb_avalible_size() < fs3002->ram.base_addr && !rb_shoule_exit())
 		{
 			mutex_unlock(&fs3002->lock);
-			ret = wait_event_interruptible(fs3002->stop_wait_q, (get_rb_avalible_size() >= fs3002->ram.base_addr) || rb_shoule_exit());
+			ret = wait_event_interruptible(fs3002->stop_wait_q, !fs3002->state || (get_rb_avalible_size() >= fs3002->ram.base_addr) || rb_shoule_exit());
 			pr_info("wakeup 2, buffer size %d, availbe size %d\n", fs3002->ram.base_addr >> 2, get_rb_avalible_size());
 			if (ret == -ERESTARTSYS) 
 			{
