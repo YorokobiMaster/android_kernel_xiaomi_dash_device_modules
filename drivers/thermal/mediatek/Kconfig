@@ -149,4 +149,6 @@ config MTK_CPU_ISOLATE_THERMAL
 	  This option depends on MTK_CORE_CTL which is the
 	  MTK cpu core control in kernel
 
+source "$(KCONFIG_EXT_PREFIX)drivers/thermal/xiaomi/Kconfig"
+
 endif

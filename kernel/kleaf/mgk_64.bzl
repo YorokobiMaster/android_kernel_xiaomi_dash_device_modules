@@ -104,18 +104,8 @@ mgk_64_kleaf_modules = [
     "//vendor/mediatek/kernel_modules/mtkcam/img_frm_sync:mtk-img-frm-sync",
     "//vendor/mediatek/kernel_modules/task_turbo_cus:task_turbo_cus",
     "//vendor/mediatek/kernel_modules/task_turbo_int:task_turbo_int",
-    "//vendor/xiaomi/proprietary/touch/touchfeature_v2/touch_driver:touch_driver",
-    "//vendor/xiaomi/proprietary/fingerprint:fingerprint_driver",
-    "//vendor/xiaomi/proprietary/mitee_drv:mitee",
-    "//vendor/xiaomi/proprietary/slm/kmod:kmod",
-    "//vendor/xiaomi/proprietary/miwillp/engine:miwillp",
-    "//vendor/xiaomi/proprietary/minet/driver:minet",
-    "//vendor/xiaomi/proprietary/minet/miicmpfilter:miicmpfilter",
-    "//vendor/xiaomi/proprietary/kernelmodules/hardwareinfo/kernel_module:hardwareinfo",
     "//vendor/mediatek/kernel_modules/game_cus:game_cus",
     "//vendor/mediatek/kernel_modules/game_int:game_int",
-    "//vendor/xiaomi/proprietary/matt/core:matt",
-    "//vendor/xiaomi/proprietary/minet/mibbr/mibbr_mtk:mibbr",
 ]
 
 mgk_64_kleaf_eng_modules = [
@@ -291,6 +281,8 @@ mgk_64_device_modules = [
     #"drivers/input/touchscreen/synaptics_dsx_96789/synaptics_touch_96789.ko",
     #"drivers/input/touchscreen/synaptics_dsx_96851/synaptics_touch_96851.ko",
     "drivers/input/touchscreen/tui-common.ko",
+    "drivers/input/touchscreen/xiaomi_touch/xiaomi_touch_dash.ko",
+    "drivers/input/touchscreen/NT38771/nt38771_touch_dash.ko",
     "drivers/input/misc/aw_haptic/haptic.ko",
     "drivers/input/misc/si_haptic/si_haptic.ko",
     "drivers/input/misc/aac_haptic/aac_haptic.ko",
@@ -1106,6 +1098,7 @@ mgk_64_device_userdebug_modules = [
     "drivers/misc/mediatek/cpufreq_v1/cpuhvfs.ko",
     "drivers/misc/mediatek/mtprof/irq_monitor.ko",
     "drivers/misc/mediatek/selinux_warning/mtk_selinux_aee_warning.ko",
+    "drivers/staging/binder_prio/binder_prio.ko",
 ]
 
 mgk_64_platform_device_userdebug_modules = {
@@ -1113,6 +1106,7 @@ mgk_64_platform_device_userdebug_modules = {
 
 
 mgk_64_device_user_modules = [
+    "drivers/staging/binder_prio/binder_prio.ko",
 ]
 
 mgk_64_platform_device_user_modules = {
@@ -1228,7 +1222,7 @@ def get_overlay_modules_list():
         mgk_64_device_modules.append("drivers/dma-buf/heaps/dio_dma_mapper.ko")
         mgk_64_device_modules.append("drivers/misc/xiaomi/cam_intentaware_fsys/cam_fs.ko")
         mgk_64_device_modules.append("drivers/mihw/powersave/powersave.ko")
-        mgk_64_device_modules.append("drivers/staging/binder_prio/binder_prio.ko")
+        mgk_64_device_modules.append("drivers/thermal/xiaomi/mi_thermal_interface.ko")
 
     if "chagall" in DEFCONFIG_OVERLAYS:
         mgk_64_device_modules.remove("sound/soc/codecs/pa_combine/snd-soc-aw882xx.ko")
