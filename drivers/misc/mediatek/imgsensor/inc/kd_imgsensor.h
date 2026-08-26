@@ -784,8 +784,8 @@
 #define DASHSC821CSULTRA_SENSOR_ID                  0xD18B
 #define SENSOR_DRVNAME_DASHSC821CSULTRA_MIPI_RAW    "dashsc821csultra_mipi_raw"
 
-#define DASHSC532HSWIDE_SENSOR_ID                   0xB787
-#define SENSOR_DRVNAME_DASHSC532HSWIDE_MIPI_RAW     "dashsc532hswide_mipi_raw"
+#define DASHSCX6000WIDE_SENSOR_ID                   0xB787
+#define SENSOR_DRVNAME_DASHSCX6000WIDE_MIPI_RAW     "dashscx6000wide_mipi_raw"
 /*XIAOMI ADD END*/
 
 

@@ -316,7 +316,7 @@
 
 	sensor0: sensor0@10 {
 		compatible = "mediatek,imgsensor";
-		sensor-names = "dashsc532hswide_mipi_raw";
+		sensor-names = "dashscx6000wide_mipi_raw";
 		reg = <0x10>;
 
 		#thermal-sensor-cells = <0>;
