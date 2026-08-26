@@ -1,4 +1,15 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (C) 2026 YorokobiMaster (GitHub: @YorokobiMaster)
+ *
+ * Independent reimplementation of functionality present in Xiaomi
+ * stock software.
+ *
+ * This implementation does not claim ownership of the original vendor
+ * design, interfaces, protocols, firmware, or other third-party
+ * intellectual property. Such rights remain with their respective owners.
+ */
+
 #ifndef MITEE_TASK_H
 #define MITEE_TASK_H
 

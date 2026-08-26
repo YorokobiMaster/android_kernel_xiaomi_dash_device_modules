@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Xiaomi fingerprint platform glue
+ * Copyright (C) 2026 YorokobiMaster (GitHub: @YorokobiMaster)
  *
- * Clean-room implementation of the userspace and DT ABI shipped on dash.
+ * Independent reimplementation of functionality present in Xiaomi
+ * stock software.
+ *
+ * This implementation does not claim ownership of the original vendor
+ * design, interfaces, protocols, firmware, or other third-party
+ * intellectual property. Such rights remain with their respective owners.
  */
 
 #include <linux/cdev.h>
