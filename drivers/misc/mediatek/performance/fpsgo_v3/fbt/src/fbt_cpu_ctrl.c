@@ -26,8 +26,8 @@
 
 /*--------------------------------------------*/
 
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+#define FBT_CTRL_MIN(a, b) (((a) < (b)) ? (a) : (b))
+
 
 
 struct FBT_CPU_CTRL_NOTIFIER_PUSH_TAG {
@@ -240,7 +240,7 @@ static void update_cfp_policy_locked(void)
 	if (cfp_cur_loading >= cfp_up_loading) {
 		cfp_cur_down_time = 0;
 		cfp_cur_up_time =
-			MIN(cfp_cur_up_time + 1, cfp_up_time);
+			FBT_CTRL_MIN(cfp_cur_up_time + 1, cfp_up_time);
 
 		if (cfp_cur_up_time >= cfp_up_time) {
 			if (!cfp_ceil_rel) {
@@ -253,7 +253,7 @@ static void update_cfp_policy_locked(void)
 	} else if (cfp_cur_loading < cfp_down_loading) {
 		cfp_cur_up_time = 0;
 		cfp_cur_down_time =
-			MIN(cfp_cur_down_time + 1, cfp_down_time);
+			FBT_CTRL_MIN(cfp_cur_down_time + 1, cfp_down_time);
 
 		if (cfp_cur_down_time >= cfp_down_time) {
 			if (cfp_ceil_rel) {
@@ -687,4 +687,3 @@ int fbt_cpu_ctrl_exit(void)
 
 	return 0;
 }
-

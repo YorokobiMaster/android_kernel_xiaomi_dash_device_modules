@@ -311,6 +311,8 @@ unsigned long long ged_get_api_sync_ts(void);
 #define LOADING_ACTIVE 0
 #define LOADING_MAX_3DTA_COM 1
 #define LOADING_MAX_3DTA 2
+#include <linux/minmax.h>
+
 #define LOADING_3D 3
 #define LOADING_ITER 4
 #define LOADING_MAX_ITERMCU 5

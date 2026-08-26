@@ -99,7 +99,7 @@ int read_rb(char *data, int32_t size)
 	filled_size = BUFFER_SIZE - 1 - grb->aval_size; // aready write size.
 
 	//pr_debug("write index %d, read index %d, filled size %d", tail, head, filled_size);
-	read_bytes = MIN (size, filled_size);
+	read_bytes = min_t(int32_t, size, filled_size);
 	if (size > filled_size)
 		pr_debug("buffer underrun , req size %d, filled size %d", size, filled_size);
 	part = BUFFER_SIZE - head;

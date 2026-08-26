@@ -33,7 +33,7 @@
 #define MIN_LBAT_VOLT 2000
 #define LBAT_PMIC_MAX_LEVEL LOW_BATTERY_LEVEL_3
 #define LBAT_PMIC_LEVEL_NUM (LOW_BATTERY_LEVEL_3+1)
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define LBAT_MAX(a, b) ((a) > (b) ? (a) : (b))
 #define VOLT_L_STR "thd-volts-l"
 #define VOLT_H_STR "thd-volts-h"
 
@@ -401,7 +401,7 @@ static int __used decide_and_throttle(enum LOW_BATTERY_USER_TAG user, unsigned i
 		else if (user == LBAT_INTR_2)
 			lbat_data->lbat_lv[INTR_2] = input;
 
-		lbat_data->l_lbat_lv = MAX(lbat_data->lbat_lv[INTR_1], lbat_data->lbat_lv[INTR_2]);
+		lbat_data->l_lbat_lv = LBAT_MAX(lbat_data->lbat_lv[INTR_1], lbat_data->lbat_lv[INTR_2]);
 
 		if (lbat_data->lbat_thl_stop > 0 || lbat_data->ppb_mode == 1) {
 			pr_info("[%s] user=%d input=%d not apply, stop/ppb=%d/%d\n", __func__,
@@ -409,9 +409,9 @@ static int __used decide_and_throttle(enum LOW_BATTERY_USER_TAG user, unsigned i
 		} else {
 			lbat_thl_lv = convert_to_thl_lv(LBAT_INTR_1, lbat_data->temp_cur_stage, lbat_data->l_lbat_lv);
 			lvsys_thl_lv = convert_to_thl_lv(LVSYS_INTR, lbat_data->temp_cur_stage, lbat_data->lvsys_lv);
-			lbat_data->l_pmic_lv = MAX(lbat_data->l_lbat_lv,
+			lbat_data->l_pmic_lv = LBAT_MAX(lbat_data->l_lbat_lv,
 				lbat_data->lvsys_lv ? LBAT_PMIC_MAX_LEVEL : 0);
-			exec_throttle(MAX(lbat_thl_lv, lvsys_thl_lv), user, thd_volt, input);
+			exec_throttle(LBAT_MAX(lbat_thl_lv, lvsys_thl_lv), user, thd_volt, input);
 		}
 		mutex_unlock(&exe_thr_lock);
 	} else if (user == LVSYS_INTR) {
@@ -422,9 +422,9 @@ static int __used decide_and_throttle(enum LOW_BATTERY_USER_TAG user, unsigned i
 		} else {
 			lbat_thl_lv = convert_to_thl_lv(LBAT_INTR_1, lbat_data->temp_cur_stage, lbat_data->l_lbat_lv);
 			lvsys_thl_lv = convert_to_thl_lv(LVSYS_INTR, lbat_data->temp_cur_stage, lbat_data->lvsys_lv);
-			lbat_data->l_pmic_lv = MAX(lbat_data->l_lbat_lv,
+			lbat_data->l_pmic_lv = LBAT_MAX(lbat_data->l_lbat_lv,
 				lbat_data->lvsys_lv ? LBAT_PMIC_MAX_LEVEL : 0);
-			exec_throttle(MAX(lbat_thl_lv, lvsys_thl_lv), user, thd_volt, input);
+			exec_throttle(LBAT_MAX(lbat_thl_lv, lvsys_thl_lv), user, thd_volt, input);
 		}
 		mutex_unlock(&exe_thr_lock);
 	} else if (user == PPB) {
@@ -448,7 +448,7 @@ static int __used decide_and_throttle(enum LOW_BATTERY_USER_TAG user, unsigned i
 		} else {
 			lbat_thl_lv = convert_to_thl_lv(LBAT_INTR_1, lbat_data->temp_cur_stage, lbat_data->l_lbat_lv);
 			lvsys_thl_lv = convert_to_thl_lv(LVSYS_INTR, lbat_data->temp_cur_stage, lbat_data->lvsys_lv);
-			exec_throttle(MAX(lbat_thl_lv, lvsys_thl_lv), user, thd_volt, input);
+			exec_throttle(LBAT_MAX(lbat_thl_lv, lvsys_thl_lv), user, thd_volt, input);
 			temp_cur_stage = lbat_data->temp_cur_stage;
 			thd_info[INTR_1] = &lbat_data->lbat_thd[INTR_1][temp_cur_stage];
 			thd_info[INTR_2] = &lbat_data->lbat_thd[INTR_2][temp_cur_stage];
@@ -477,7 +477,7 @@ static int __used decide_and_throttle(enum LOW_BATTERY_USER_TAG user, unsigned i
 		} else {
 			lbat_thl_lv = convert_to_thl_lv(LBAT_INTR_1, lbat_data->temp_cur_stage, lbat_data->l_lbat_lv);
 			lvsys_thl_lv = convert_to_thl_lv(LVSYS_INTR, lbat_data->temp_cur_stage, lbat_data->lvsys_lv);
-			exec_throttle(MAX(lbat_thl_lv, lvsys_thl_lv), user, thd_volt, input);
+			exec_throttle(LBAT_MAX(lbat_thl_lv, lvsys_thl_lv), user, thd_volt, input);
 			mutex_unlock(&exe_thr_lock);
 		}
 	} else if (user == UT) {
@@ -826,7 +826,7 @@ static int __used pt_check_power_off(void)
 		thd_info =
 			&lbat_data->lbat_thd[INTR_2][lbat_data->temp_reg_stage];
 		lbat2_level = thd_info->lbat_intr_info[thd_info->thd_volts_size - 1].lt_lv;
-		pt_power_off_lv = MAX(pt_power_off_lv, lbat2_level)
+		pt_power_off_lv = LBAT_MAX(pt_power_off_lv, lbat2_level)
 	}
 #endif
 	if (!lbat_data->tag)

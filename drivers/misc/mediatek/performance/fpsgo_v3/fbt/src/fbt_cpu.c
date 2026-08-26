@@ -121,9 +121,10 @@
 #define FPSGO_BAFFINITY_USERDEFINE 6
 #define FPSGO_BAFFINITY_TOTAL 7
 
+#define FBT_MAX(a, b) (((a) > (b)) ? (a) : (b))
+#define FBT_MIN(a, b) (((a) < (b)) ? (a) : (b))
 
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+
 
 struct fbt_cpu_dvfs_info {
 	unsigned int *power;
@@ -862,7 +863,7 @@ static void fbt_limit_ceiling_locked(struct cpu_ctrl_data *pld, int is_rescue)
 			continue;
 
 		freq = fbt_cluster_X2Y(cluster, opp, OPP, FREQ, 1, __func__);
-		pld[cluster].max = MIN(freq, pld[cluster].max);
+		pld[cluster].max = FBT_MIN(freq, pld[cluster].max);
 	}
 }
 
@@ -902,7 +903,7 @@ static int fbt_limit_capacity_isolation(int blc_wt, int *max_cap_isolation)
 	if (max_cap <= 0)
 		return blc_wt;
 
-	return MIN(blc_wt, max_cap);
+	return FBT_MIN(blc_wt, max_cap);
 }
 
 int fbt_limit_capacity(int blc_wt, int is_rescue)
@@ -917,7 +918,7 @@ int fbt_limit_capacity(int blc_wt, int is_rescue)
 	if (max_cap <= 0)
 		return blc_wt;
 
-	return MIN(blc_wt, max_cap);
+	return FBT_MIN(blc_wt, max_cap);
 }
 
 static int fbt_get_limit_capacity(int is_rescue)
@@ -2331,26 +2332,26 @@ static int fbt_get_limit_max_capacity(const struct fpsgo_boost_attr *attr,
 		if (separate_aa_final) {
 			if (jerk == FPSGO_JERK_INACTIVE) {
 				*limit_max_cap = limit_uclamp_final ?
-					MIN(*limit_max_cap, limit_uclamp_final) : *limit_max_cap;
+					FBT_MIN(*limit_max_cap, limit_uclamp_final) : *limit_max_cap;
 				*limit_cap_b = limit_uclamp_final ?
-					MIN(*limit_cap_b, limit_uclamp_final) : *limit_cap_b;
+					FBT_MIN(*limit_cap_b, limit_uclamp_final) : *limit_cap_b;
 				*limit_cap_m = limit_uclamp_m_final ?
-					MIN(*limit_cap_m, limit_uclamp_m_final) : *limit_cap_m;
+					FBT_MIN(*limit_cap_m, limit_uclamp_m_final) : *limit_cap_m;
 			} else {
 				*limit_max_cap = limit_ruclamp_final ?
-					MIN(*limit_max_cap, limit_ruclamp_final) : *limit_max_cap;
+					FBT_MIN(*limit_max_cap, limit_ruclamp_final) : *limit_max_cap;
 				*limit_cap_b = limit_ruclamp_final ?
-					MIN(*limit_cap_b, limit_ruclamp_final) : *limit_cap_b;
+					FBT_MIN(*limit_cap_b, limit_ruclamp_final) : *limit_cap_b;
 				*limit_cap_m = limit_ruclamp_m_final ?
-					MIN(*limit_cap_m, limit_ruclamp_m_final) : *limit_cap_m;
+					FBT_MIN(*limit_cap_m, limit_ruclamp_m_final) : *limit_cap_m;
 			}
 		} else {
 			if (jerk == FPSGO_JERK_INACTIVE) {
 				*limit_max_cap = limit_uclamp_final ?
-					MIN(*limit_max_cap, limit_uclamp_final) : *limit_max_cap;
+					FBT_MIN(*limit_max_cap, limit_uclamp_final) : *limit_max_cap;
 			} else {
 				*limit_max_cap = limit_ruclamp_final ?
-					MIN(*limit_max_cap, limit_ruclamp_final) : *limit_max_cap;
+					FBT_MIN(*limit_max_cap, limit_ruclamp_final) : *limit_max_cap;
 			}
 		}
 	}
@@ -2412,12 +2413,12 @@ void fbt_cal_min_max_cap(struct render_info *thr,
 	/* limit_perf */
 	if (separate_aa_final) {
 		if (limit_perf_b)
-			min_cap_b = MIN(min_cap_b, limit_perf_b);
+			min_cap_b = FBT_MIN(min_cap_b, limit_perf_b);
 		if (limit_perf_m)
-			min_cap_m = MIN(min_cap_m, limit_perf_m);
+			min_cap_m = FBT_MIN(min_cap_m, limit_perf_m);
 	} else {
 		if (limit_perf_b)
-			min_cap = MIN(min_cap, limit_perf_b);
+			min_cap = FBT_MIN(min_cap, limit_perf_b);
 	}
 
 	// Get max_cap
@@ -2434,10 +2435,10 @@ void fbt_cal_min_max_cap(struct render_info *thr,
 	}
 
 	// limit_freq2cap
-	*final_max_util = MIN((max_cap << 10) / 100U, limit_util);
+	*final_max_util = FBT_MIN((max_cap << 10) / 100U, limit_util);
 	if (separate_aa_final) {
-		*final_max_util_b = MIN((max_cap_b << 10) / 100U, limit_util_b);
-		*final_max_util_m = MIN((max_cap_m << 10) / 100U, limit_util_m);
+		*final_max_util_b = FBT_MIN((max_cap_b << 10) / 100U, limit_util_b);
+		*final_max_util_m = FBT_MIN((max_cap_m << 10) / 100U, limit_util_m);
 	}
 
 	// limit_uclamp
@@ -3231,7 +3232,7 @@ unsigned int fbt_get_new_base_blc(struct cpu_ctrl_data *pld,
 			int opp =
 				fbt_get_opp_by_normalized_cap(blc_wt, cluster);
 
-			opp = MIN(opp, base_opp[cluster]);
+			opp = FBT_MIN(opp, base_opp[cluster]);
 			opp = clamp(opp, 0, nr_freq_cpu - 1);
 
 			pld[cluster].max = fbt_cluster_X2Y(cluster, max(
@@ -3994,7 +3995,7 @@ static void fbt_do_boost(unsigned int blc_wt, int pid,
 
 		if (cluster == min_cap_cluster
 			&& blc_wt <= fbt_cluster_X2Y(min_cap_cluster, 0, OPP, CAP, 1, __func__)) {
-			mbhr_opp = max((clus_opp[cluster] - MAX(bhr_opp, bhr_opp_l)), 0);
+			mbhr_opp = max((clus_opp[cluster] - FBT_MAX(bhr_opp, bhr_opp_l)), 0);
 		} else
 			mbhr_opp = max((clus_opp[cluster] - bhr_opp), 0);
 
@@ -4295,7 +4296,7 @@ static unsigned long long fbt_get_t2wnt(int target_fps,
 		}
 	}
 ERROR:
-	t2wnt = MAX(1ULL, t2wnt);
+	t2wnt = FBT_MAX(1ULL, t2wnt);
 
 exit:
 	mutex_unlock(&fbt_mlock);
@@ -5505,7 +5506,7 @@ static int fbt_boost_policy(
 					t2wnt = 1;
 			}
 
-			t2wnt = MAX(1ULL, t2wnt);
+			t2wnt = FBT_MAX(1ULL, t2wnt);
 			fpsgo_systrace_c_fbt(pid, buffer_id, t2wnt, "t2wnt_adjust");
 		} else {
 			t2wnt = (u64) fbt_get_t2wnt(target_fps, ts,

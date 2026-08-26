@@ -66,7 +66,7 @@ int get_cfg(struct vcodec_inst *inst, struct mtk_vcodec_ctx *ctx)
 	u32 mb_per_sec, op_rate;
 	int i;
 
-	op_rate = MAX(inst->op_rate_user, inst->op_rate_adaptive);
+	op_rate = VCODEC_MAX(inst->op_rate_user, inst->op_rate_adaptive);
 	if (op_rate <= 0)
 		mb_per_sec = inst->width * inst->height / 256 * 30;
 	else
@@ -424,7 +424,7 @@ u64 calc_freq(struct vcodec_inst *inst, struct mtk_vcodec_dev *dev)
 		}
 	} else if (inst->codec_type == MTK_INST_ENCODER) {
 		if (perf != 0) {
-			inst->op_rate = MAX(MAX(inst->op_rate_user, inst->op_rate_adaptive), inst->fps);
+			inst->op_rate = VCODEC_MAX(VCODEC_MAX(inst->op_rate_user, inst->op_rate_adaptive), inst->fps);
 
 			/* HEVC Encoder boost for 720P180 test */
 			if (inst->priority == 0 && (inst->op_rate_user <=0 || inst->op_rate_user >=90) &&

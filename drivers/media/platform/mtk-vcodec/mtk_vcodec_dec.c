@@ -503,7 +503,7 @@ static int mtk_vdec_get_lpw_limit(struct mtk_vcodec_ctx *ctx)
 	if (ctx->picinfo.buf_w * ctx->picinfo.buf_h > MTK_VDEC_4K_WH)
 		default_limit = mtk_vdec_lpw_limit - 2;
 
-	return (ctx->input_slot > 0) ? MAX(1, MIN(default_limit, ctx->input_slot - 2)) : default_limit;
+	return (ctx->input_slot > 0) ? VCODEC_MAX(1, VCODEC_MIN(default_limit, ctx->input_slot - 2)) : default_limit;
 }
 
 static int mtk_vdec_get_lpw_start_limit(struct mtk_vcodec_ctx *ctx)
@@ -537,7 +537,7 @@ static void mtk_vdec_lpw_timer_handler(struct timer_list *timer)
 		if (ctx->lpw_state == VDEC_LPW_WAIT) {
 			src_cnt = v4l2_m2m_num_src_bufs_ready(ctx->m2m_ctx);
 			dst_cnt = v4l2_m2m_num_dst_bufs_ready(ctx->m2m_ctx);
-			pair_cnt = MIN(src_cnt, dst_cnt);
+			pair_cnt = VCODEC_MIN(src_cnt, dst_cnt);
 			mtk_lpw_debug(1, "[%d] timer timeup, switch lpw_state(%d) to DEC(%d)(pair cnt %d(%d,%d))",
 				ctx->id, ctx->lpw_state, VDEC_LPW_DEC, pair_cnt, src_cnt, dst_cnt);
 			ctx->lpw_state = VDEC_LPW_DEC;
@@ -575,7 +575,7 @@ static void mtk_vdec_lpw_set_ts(struct mtk_vcodec_ctx *ctx, u64 ts)
 	}
 	if (ts >= ctx->lpw_last_disp_ts)
 		ctx->lpw_ts_diff = ts - ctx->lpw_last_disp_ts;
-	ctx->lpw_last_disp_ts = MAX(ts, ctx->lpw_last_disp_ts);
+	ctx->lpw_last_disp_ts = VCODEC_MAX(ts, ctx->lpw_last_disp_ts);
 	spin_unlock_irqrestore(&ctx->lpw_lock, flags);
 }
 
@@ -696,7 +696,7 @@ static bool mtk_vdec_lpw_check_dec_start(struct mtk_vcodec_ctx *ctx,
 
 	src_cnt = v4l2_m2m_num_src_bufs_ready(ctx->m2m_ctx);
 	dst_cnt = v4l2_m2m_num_dst_bufs_ready(ctx->m2m_ctx);
-	pair_cnt = MIN(src_cnt, dst_cnt);
+	pair_cnt = VCODEC_MIN(src_cnt, dst_cnt);
 	limit_cnt = mtk_vdec_get_lpw_limit(ctx);
 
 	if (is_EOS) {
@@ -764,7 +764,7 @@ static bool mtk_vdec_lpw_check_dec_stop(struct mtk_vcodec_ctx *ctx,
 
 	src_cnt = v4l2_m2m_num_src_bufs_ready(ctx->m2m_ctx);
 	dst_cnt = v4l2_m2m_num_dst_bufs_ready(ctx->m2m_ctx);
-	pair_cnt = MIN(src_cnt, dst_cnt);
+	pair_cnt = VCODEC_MIN(src_cnt, dst_cnt);
 	limit_cnt = before_decode ? 1 : 0;
 	if (before_decode)
 		mtk_lpw_debug(8, "[%d] pair cnt %d(%d,%d) lpw_state(%d) lpw_dec_start_cnt %d, group_dec_cnt %d",
@@ -2127,7 +2127,7 @@ static void mtk_vdec_worker(struct work_struct *work)
 
 		src_cnt_before = v4l2_m2m_num_src_bufs_ready(ctx->m2m_ctx);
 		dst_cnt_before = v4l2_m2m_num_dst_bufs_ready(ctx->m2m_ctx);
-		pair_cnt_before = MIN(src_cnt_before, dst_cnt_before);
+		pair_cnt_before = VCODEC_MIN(src_cnt_before, dst_cnt_before);
 
 		has_stop = mtk_vdec_lpw_check_dec_stop(ctx, false, true, "before dec");
 		if (ctx->in_group && (ctx->lpw_state == VDEC_LPW_WAIT || ctx->dynamic_low_latency ||
@@ -2277,7 +2277,7 @@ static void mtk_vdec_worker(struct work_struct *work)
 
 		src_cnt = v4l2_m2m_num_src_bufs_ready(ctx->m2m_ctx);
 		dst_cnt = v4l2_m2m_num_dst_bufs_ready(ctx->m2m_ctx);
-		pair_cnt = MIN(src_cnt, dst_cnt);
+		pair_cnt = VCODEC_MIN(src_cnt, dst_cnt);
 		if (ctx->in_group && (pair_cnt == 0 || ctx->dynamic_low_latency))
 			mtk_lpw_err("[%d] pair cnt before %d(%d,%d) after %d(%d,%d) but in_group %d, lpw_state(%d), dynamic_low_latency %d, lpw_dec_start_cnt %d, group_dec_cnt %d",
 				ctx->id, pair_cnt, src_cnt, dst_cnt,

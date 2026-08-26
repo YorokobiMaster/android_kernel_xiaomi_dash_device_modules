@@ -334,7 +334,7 @@ bool mme_register_buffer(unsigned int module, char *module_buf_name, unsigned in
 	memset(mme_globals[module].module_buffer_name[type], 0, MME_MODULE_NAME_LEN);
 	if (module_buf_name)
 		memcpy(mme_globals[module].module_buffer_name[type], module_buf_name,
-				MIN(strlen(module_buf_name), (MME_MODULE_NAME_LEN-1)));
+				MME_MIN(strlen(module_buf_name), (MME_MODULE_NAME_LEN-1)));
 	mme_globals[module].write_pointer[type] = 0;
 	mme_globals[module].buffer_bytes[type] = module_buf_size;
 	mme_globals[module].buffer_units[type] = module_buf_size / MME_UNIT_SIZE;
@@ -432,7 +432,7 @@ static void mme_scale_buffer(unsigned int module, unsigned int scale_value)
 
 			mme_release_buffer(module, type);
 			mme_register_buffer(module, module_buf_name, type,
-							MIN(MAX_MODULE_BUFFER_SIZE, new_buffer_size));
+							MME_MIN(MAX_MODULE_BUFFER_SIZE, new_buffer_size));
 		}
 	}
 	mme_log_start();
@@ -597,7 +597,7 @@ static bool is_valid_index(unsigned int index, struct mme_unit_t *p_ring_buffer,
 	}
 
 	if (p_ring_buffer[index].data == 0 && p_ring_buffer[index+1].data == 0) {
-		for (i=index+2; i<MIN(buffer_units, index+20); i++)
+		for (i=index+2; i<MME_MIN(buffer_units, index+20); i++)
 			sum += p_ring_buffer[i].data;
 
 		return (sum != 0);
@@ -737,7 +737,7 @@ static void get_pid_info(struct mme_unit_t *p_ring_buffer, unsigned int buffer_u
 			if (type == DATA_FLAG_STACK_REGION_STRING) {
 				int max_length = (unit_size - MME_HEADER_UNIT_SIZE) * MME_UNIT_SIZE - data_size;
 
-				max_length = MIN(max_length, MAX_STACK_STR_SIZE);
+				max_length = MME_MIN(max_length, MAX_STACK_STR_SIZE);
 				p_str = (char *)p;
 				type_size = sizeof(char *);
 				p_str += type_size;

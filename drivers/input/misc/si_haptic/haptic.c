@@ -44,6 +44,8 @@
 #include "sih688x_reg.h"
 #include "sih688x_func_config.h"
 
+#define SIH_MIN(x, y) ((x) < (y) ? (x) : (y))
+
 /*****************************************************
  *
  * variable
@@ -2977,7 +2979,7 @@ static ssize_t custom_wave_store(struct device *dev,
 	atomic_set(&sih_haptic->rtp.is_in_write_loop, 1);
 
 	while (count > 0) {
-		buf_len = MIN(count, period_size);
+		buf_len = SIH_MIN(count, period_size);
 		ret = write_rb(buf + offset,  buf_len);
 		if (ret < 0)
 			goto exit;

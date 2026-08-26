@@ -842,7 +842,7 @@ bool mtk_venc_dvfs_monitor_op_rate(struct mtk_vcodec_ctx *ctx, int buf_type)
 			return false;
 		}
 
-		tmp_op = MAX(ctx->last_monitor_op, prev_op);
+		tmp_op = VCODEC_MAX(ctx->last_monitor_op, prev_op);
 
 		update_op = mtk_dvfs_check_op_diff(prev_op, ctx->last_monitor_op, threshold, 1) &&
 			mtk_dvfs_check_op_diff(cur_op, tmp_op, threshold, -1);

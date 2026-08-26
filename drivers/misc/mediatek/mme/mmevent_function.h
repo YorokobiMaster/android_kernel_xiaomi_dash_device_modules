@@ -252,7 +252,7 @@
 			is_stack_str = true; \
 		size_data = (is_str_data ? (is_stack_str ? \
 					(_ALIGN_4_BYTES(sizeof(char *) + \
-					(str_len=MIN(strlen((char *)(unsigned long)(data)), \
+					(str_len=MME_MIN(strlen((char *)(unsigned long)(data)), \
 					MAX_STACK_STR_SIZE)) + 1)) : \
 					sizeof(char *)): (is_int_pointer_data ? FLAG_INT_POINTER_SIZE : \
 					sizeof(typeof(data)))); \
@@ -536,4 +536,3 @@
 		SAVE_DATA(p_mme_buf, data16, mme_data_size[15], mme_data_flag[15], mme_str_len[15]); \
 	} while(0)
 #endif
-
