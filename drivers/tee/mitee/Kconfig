@@ -5,9 +5,23 @@ config MITEE_SUPPORT
 	  This implements the MI-TEE Trusted Execution Environment (TEE)
 	  feature.
 
+config OPTEE_SHM_NUM_PRIV_PAGES
+	int "Private Shared Memory Pages"
+	default 1
+	depends on MITEE_SUPPORT
+	help
+	  This sets the number of private shared memory pages to be
+	  used by the MITEE TEE driver.
+
+config OPTEE_BENCHMARK
+	bool "MITEE Benchmark (EXPERIMENTAL)"
+	depends on MITEE_SUPPORT
+	help
+	  This enables benchmarking support in the MITEE TEE driver.
+
 # MITEE TUI Configuration
 config MITEE_TUI_SUPPORT
 	tristate "Enable MITEE TUI Support"
 	depends on MITEE_SUPPORT
 	help
-	  this is used to support mitee tui driver
+	  This enables the separate MITEE trusted UI driver.
