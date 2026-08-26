@@ -21,7 +21,6 @@
 #include <linux/spi/spi-mem.h>
 #include <linux/dma-mapping.h>
 #include <linux/time.h>
-#include "fp_spi.h"
 #include <linux/iopoll.h>
 #include <linux/arm-smccc.h>
 #include <linux/soc/mediatek/mtk_sip_svc.h>
@@ -1938,9 +1937,9 @@ static int mtk_spi_probe(struct platform_device *pdev)
 		goto err_put_master;
 	}
 
-	if(strncmp(dev_name(&master->dev), FP_USE_SPI, FP_USE_SPI_LENGTH) == 0) {
+	if (master->bus_num == CONFIG_XIAOMI_FINGERPRINT_SPI_NUM) {
 		fingerprint_ms = spi_master_get_devdata(master);
-		pr_info("it is Fingerprint spi: %s", FP_USE_SPI);
+		pr_info("it is fingerprint spi: %d", master->bus_num);
 	}
 
 	return 0;
