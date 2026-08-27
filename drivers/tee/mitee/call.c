@@ -114,7 +114,7 @@ static struct optee_msg_arg *optee_get_msg_arg(size_t num_params)
 	size_t sz = OPTEE_MSG_GET_ARG_SIZE(num_params);
 	struct optee_msg_arg *msg_arg;
 
-	if (sz > MITEE_MSG_PAYLOAD_SIZE)
+	if (sz > MITEE_MSG_ARG_SIZE)
 		return ERR_PTR(-E2BIG);
 
 	msg_arg = kzalloc(sz, GFP_KERNEL);

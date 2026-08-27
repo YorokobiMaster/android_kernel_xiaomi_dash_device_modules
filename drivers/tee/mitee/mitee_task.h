@@ -30,7 +30,7 @@ struct tee_context;
 #define MITEE_MSG_QUEUE_SIZE		0x3000
 #define MITEE_MSG_SLOT_SIZE		0x100
 #define MITEE_MSG_SLOT_COUNT		16
-#define MITEE_MSG_PAYLOAD_SIZE		0xec
+#define MITEE_MSG_ARG_SIZE		0xe0
 
 #define MITEE_MSG_MAGIC			0x4d49
 #define MITEE_MSG_VERSION		1
@@ -55,8 +55,10 @@ struct mitee_msg {
 	u32 reserved;
 	s32 task_id;
 	u32 command;
-	u8 payload[MITEE_MSG_PAYLOAD_SIZE];
-};
+	u8 payload[MITEE_MSG_ARG_SIZE];
+	u64 timestamp;
+	u32 timestamp_reserved;
+} __packed;
 
 struct mitee_msg_buf {
 	struct mutex lock;

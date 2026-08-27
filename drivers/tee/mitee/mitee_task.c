@@ -20,6 +20,7 @@
 #include <linux/mm.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/timekeeping.h>
 
 #include <tee_drv.h>
 #include "mitee_task.h"
@@ -29,6 +30,7 @@
 static_assert(sizeof(struct mitee_msg_ring) == 0x18);
 static_assert(sizeof(struct mitee_msg) == MITEE_MSG_SLOT_SIZE);
 static_assert(offsetof(struct mitee_msg, payload) == 0x14);
+static_assert(offsetof(struct mitee_msg, timestamp) == 0xf4);
 
 static int mitee_ffa_call(struct optee *optee,
 			  struct ffa_send_direct_data *data)
@@ -215,6 +217,7 @@ static int mitee_msg_pack(struct mitee_msg *msg, int task_id, u32 command,
 			  const struct optee_msg_arg *arg)
 {
 	size_t size = OPTEE_MSG_GET_ARG_SIZE(arg->num_params);
+	struct timespec64 ts;
 
 	if (size > sizeof(msg->payload))
 		return -E2BIG;
@@ -225,6 +228,8 @@ static int mitee_msg_pack(struct mitee_msg *msg, int task_id, u32 command,
 	msg->task_id = task_id;
 	msg->command = command;
 	memcpy(msg->payload, arg, size);
+	ktime_get_real_ts64(&ts);
+	msg->timestamp = ts.tv_sec;
 	return 0;
 }
 
