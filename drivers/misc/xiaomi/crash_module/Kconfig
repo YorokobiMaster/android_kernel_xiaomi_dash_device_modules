@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config XIAOMI_CRASH_MODULE
+	tristate "Xiaomi crash module buffer"
+	depends on PROC_FS
