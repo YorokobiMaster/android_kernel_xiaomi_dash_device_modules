@@ -155,6 +155,7 @@ obj-$(CONFIG_DEVICE_MODULES_PCIE_MEDIATEK_SMT) += pcie/
 obj-$(CONFIG_MTK_SMAP) += smap/
 obj-$(CONFIG_MTK_WLA) += wla/
 obj-$(CONFIG_MTK_SPM_CAREVENT) += carevent/
+obj-$(CONFIG_SIMTRAY_STATUS) += simtray/
 obj-$(CONFIG_ARM) += arm_div/
 obj-$(CONFIG_ROOTFS_CHECK) += rootfs_check/
 obj-$(CONFIG_MTK_PKVM_MKP) += pkvm_mkp/

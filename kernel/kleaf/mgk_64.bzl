@@ -540,6 +540,7 @@ mgk_64_device_modules = [
     "drivers/misc/mediatek/sda/systracker.ko",
     "drivers/misc/mediatek/sensor/2.0/core/hf_manager.ko",
     "drivers/misc/mediatek/sensor/2.0/sensorhub/sensorhub.ko",
+    "drivers/misc/mediatek/simtray/simtray.ko",
     "drivers/misc/mediatek/slbc/mmsram.ko",
     "drivers/misc/mediatek/slbc/mtk_slbc.ko",
     "drivers/misc/mediatek/slbc/slbc_ipi.ko",
