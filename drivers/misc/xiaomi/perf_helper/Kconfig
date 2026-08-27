@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config XIAOMI_PERF_HELPER
+	tristate "Xiaomi memory and performance helper"
+	depends on MEMCG
+	help
+	  Provide the Xiaomi performance logging, reclaim, memory-cgroup,
+	  kswapd affinity, and MIMD notification interfaces used by HyperOS.

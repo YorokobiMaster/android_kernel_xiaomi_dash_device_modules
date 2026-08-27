@@ -1210,6 +1210,7 @@ def get_overlay_modules_list():
         mgk_64_device_modules.append("drivers/tee/mitee/mitee.ko")
         mgk_64_device_modules.append("drivers/misc/xiaomi/hwid/hwid.ko")
         mgk_64_device_modules.append("drivers/misc/xiaomi/debug_ext/debug_ext.ko")
+        mgk_64_device_modules.append("drivers/misc/xiaomi/perf_helper/perf_helper.ko")
         mgk_64_device_modules.append("drivers/input/fingerprint/xiaomi_spi_tee.ko")
         mgk_64_device_modules.remove("drivers/input/misc/aw_haptic/haptic.ko")
         mgk_64_device_modules.remove("drivers/input/misc/aac_haptic/aac_haptic.ko")

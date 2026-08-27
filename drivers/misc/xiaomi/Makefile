@@ -18,3 +18,5 @@ obj-$(CONFIG_MI_LOCKING)   += mi_locking/
 obj-$(CONFIG_CAM_INTENTAWARE_FSYS) += cam_intentaware_fsys/
 
 obj-$(CONFIG_XIAOMI_DEBUG_EXT) += debug_ext/
+
+obj-$(CONFIG_XIAOMI_PERF_HELPER) += perf_helper/
