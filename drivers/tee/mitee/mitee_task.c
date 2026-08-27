@@ -263,6 +263,7 @@ static int mitee_worker_fn(void *data)
 	struct mitee_task *task;
 	struct optee_msg_arg *arg;
 	struct mitee_msg msg;
+	struct mitee_msg reply;
 	struct ffa_send_direct_data ffa_data;
 	int response_task_id;
 	int rc;
@@ -349,10 +350,11 @@ static int mitee_worker_fn(void *data)
 			}
 
 			mitee_handle_rpc(optee->supp.ctx, arg);
-			rc = mitee_msg_pack(&msg, response_task_id,
+			rc = mitee_msg_pack(&reply, response_task_id,
 					    MITEE_MSG_CMD_RPC_REPLY, arg);
 			if (rc)
 				goto task_error;
+			msg = reply;
 		}
 		continue;
 
