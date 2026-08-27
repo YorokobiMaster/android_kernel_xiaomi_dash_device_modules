@@ -10,4 +10,5 @@ source "$(KCONFIG_EXT_PREFIX)drivers/misc/xiaomi/build_product_name/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/misc/xiaomi/mi_t1_chip/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/misc/xiaomi/mi_locking/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/misc/xiaomi/cam_intentaware_fsys/Kconfig"
+source "$(KCONFIG_EXT_PREFIX)drivers/misc/xiaomi/debug_ext/Kconfig"
 endmenu

@@ -16,3 +16,5 @@ obj-$(CONFIG_MI_T1_CHIP) += mi_t1_chip/
 obj-$(CONFIG_MI_LOCKING)   += mi_locking/
 
 obj-$(CONFIG_CAM_INTENTAWARE_FSYS) += cam_intentaware_fsys/
+
+obj-$(CONFIG_XIAOMI_DEBUG_EXT) += debug_ext/

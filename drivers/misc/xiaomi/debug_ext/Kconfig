@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config XIAOMI_DEBUG_EXT
+	tristate "Xiaomi debug extension"
+	depends on PROC_FS
+	help
+	  Create the Xiaomi panic-trigger proc interface used to request an
+	  immediate, reboot-time, or shutdown-time kernel panic.
