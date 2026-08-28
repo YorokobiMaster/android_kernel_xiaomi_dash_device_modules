@@ -40,7 +40,7 @@ struct log_rb {
 	volatile char aeskey[KEY_LENGTH];
 	volatile char reserved[RESERVED_LENGTH];
 	bool rt_log_init; //if runtime log
-	volatile char data[0];
+	volatile char data[];
 } __packed;
 
 struct mitee_memlog_state {
@@ -69,7 +69,6 @@ struct mitee_memlog_state {
 	char line_buffer[MITEE_LINE_BUFFER_SIZE];
 };
 
-int mitee_memlog_probe(struct ffa_device *ffa_dev, const struct ffa_ops *ops,
-		       struct platform_device *pdev);
+int mitee_memlog_probe(struct platform_device *pdev);
 int mitee_memlog_remove(struct platform_device *pdev);
 #endif

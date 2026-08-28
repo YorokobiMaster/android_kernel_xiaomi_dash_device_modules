@@ -37,7 +37,6 @@ void optee_wait_queue_init(struct optee_wait_queue *priv)
 
 void optee_wait_queue_exit(struct optee_wait_queue *priv)
 {
-	mutex_destroy(&priv->mu);
 }
 
 void mitee_rpc_callback_queue_init(struct mitee_rpc_callback_queue *queue)
@@ -48,7 +47,6 @@ void mitee_rpc_callback_queue_init(struct mitee_rpc_callback_queue *queue)
 
 void mitee_rpc_callback_queue_deinit(struct mitee_rpc_callback_queue *queue)
 {
-	mutex_destroy(&queue->mut);
 }
 
 static void handle_rpc_func_cmd_get_time(struct optee_msg_arg *arg)

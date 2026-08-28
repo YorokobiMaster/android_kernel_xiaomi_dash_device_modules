@@ -6,11 +6,11 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/crash_dump.h>
 #include <linux/errno.h>
 #include <linux/io.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/proc_fs.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/types.h>
@@ -19,52 +19,57 @@
 #include <tee_drv.h>
 #include "optee_private.h"
 
-int optee_pool_op_alloc_helper(
-	struct tee_shm_pool_mgr *poolm, struct tee_shm *shm, size_t size,
-	int (*shm_register)(struct tee_context *ctx, struct tee_shm *shm,
-			    struct page **pages, size_t num_pages,
-			    unsigned long start))
+static int mitee_concurrency_proc_open(struct inode *inode, struct file *file)
 {
-	unsigned int order = get_order(size);
-	struct page *page;
-	int rc = 0;
+	return 0;
+}
 
-	page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
-	if (!page)
+static ssize_t mitee_concurrency_proc_write(struct file *file,
+					    const char __user *buf,
+					    size_t count, loff_t *ppos)
+{
+	struct optee *optee = get_optee_drv_state();
+	unsigned int enable;
+	int rc;
+
+	if (!optee || !buf || !count || !ppos || count >= 5)
+		return -EINVAL;
+
+	rc = kstrtouint_from_user(buf, count, 10, &enable);
+	if (rc)
+		return rc;
+
+	switch (enable) {
+	case 0:
+		pr_info("disable concurrency\n");
+		sema_init(&optee->concurrency, 1);
+		break;
+	case 1:
+		pr_info("enable concurrency\n");
+		sema_init(&optee->concurrency, MITEE_WORKER_COUNT);
+		break;
+	default:
+		pr_err("invalid proc ops: %u\n", enable);
+		return -EINVAL;
+	}
+
+	return count;
+}
+
+static const struct proc_ops mitee_concurrency_fops = {
+	.proc_open = mitee_concurrency_proc_open,
+	.proc_write = mitee_concurrency_proc_write,
+};
+
+int mitee_proc_init(void)
+{
+	if (!proc_create("mitee_concurrency", 0644, NULL,
+			 &mitee_concurrency_fops)) {
+		pr_err("failed to create mitee worker proc node\n");
 		return -ENOMEM;
-
-	shm->kaddr = page_address(page);
-	shm->paddr = page_to_phys(page);
-	shm->size = PAGE_SIZE << order;
-
-	if (shm_register) {
-		unsigned int nr_pages = 1 << order, i;
-		struct page **pages;
-
-		pages = kcalloc(nr_pages, sizeof(*pages), GFP_KERNEL);
-		if (!pages) {
-			rc = -ENOMEM;
-			goto err;
-		}
-
-		for (i = 0; i < nr_pages; i++) {
-			pages[i] = page;
-			page++;
-		}
-
-		shm->flags |= TEE_SHM_REGISTER;
-		rc = shm_register(shm->ctx, shm, pages, nr_pages,
-				  (unsigned long)shm->kaddr);
-		kfree(pages);
-		if (rc)
-			goto err;
 	}
 
 	return 0;
-
-err:
-	__free_pages(page, order);
-	return rc;
 }
 
 #if 0
@@ -74,7 +79,7 @@ static void optee_bus_scan(struct work_struct *work)
 }
 #endif
 
-int optee_open(struct tee_context *ctx, bool cap_memref_null)
+int noinline optee_open_common(struct tee_context *ctx, bool cap_memref_null)
 {
 	struct optee_context_data *ctxdata;
 	struct tee_device *teedev = ctx->teedev;
@@ -174,32 +179,6 @@ void optee_remove_common(struct optee *optee)
 	optee_supp_uninit(&optee->supp);
 	mutex_destroy(&optee->call_queue.mutex);
 }
-
-static int ffa_abi_rc;
-
-static int optee_core_init(void)
-{
-	/*
-	 * The kernel may have crashed at the same time that all available
-	 * secure world threads were suspended and we cannot reschedule the
-	 * suspended threads without access to the crashed kernel's wait_queue.
-	 * Therefore, we cannot reliably initialize the OP-TEE driver in the
-	 * kdump kernel.
-	 */
-	if (is_kdump_kernel())
-		return -ENODEV;
-
-	ffa_abi_rc = optee_ffa_abi_register();
-	return ffa_abi_rc;
-}
-module_init(optee_core_init);
-
-static void optee_core_exit(void)
-{
-	if (!ffa_abi_rc)
-		optee_ffa_abi_unregister();
-}
-module_exit(optee_core_exit);
 
 MODULE_AUTHOR("Linaro");
 MODULE_DESCRIPTION("OP-TEE driver");

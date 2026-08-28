@@ -49,5 +49,9 @@ int mitee_alloc_memory_sgt(uint32_t mem_size, struct sg_table **out_sgt);
 
 void mitee_dynamic_mem_init(void);
 void mitee_dynamic_mem_deinit(void);
+int mitee_dynamic_mem_free_ffa(uint64_t mem_handle);
+int mitee_dynamic_mem_allocate_ffa(uint32_t mem_size, uint64_t *mem_handle,
+				   void *buf, uint32_t size_in,
+				   uint32_t *size_out);
 
 #endif

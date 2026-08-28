@@ -409,9 +409,9 @@ static int mitee_call_notifier_unregister(struct notifier_block *n)
 	return atomic_notifier_chain_unregister(&optee->notifier, n);
 }
 
-int mitee_memlog_probe(struct ffa_device *ffa_dev, const struct ffa_ops *ops,
-		       struct platform_device *pdev)
+int mitee_memlog_probe(struct platform_device *pdev)
 {
+	struct optee *optee = get_optee_drv_state();
 	struct mitee_memlog_state *s;
 	int result = 0;
 	phys_addr_t pa;
@@ -422,7 +422,7 @@ int mitee_memlog_probe(struct ffa_device *ffa_dev, const struct ffa_ops *ops,
 	struct ffa_send_direct_data data = { OPTEE_FFA_GET_MITEE_LOG_BUFFER };
 	int rc = 0;
 
-	dev_dbg(&pdev->dev, "%s\n", __func__);
+	dev_printk(KERN_DEBUG, &pdev->dev, "%s\n", __func__);
 
 	s = kzalloc(sizeof(*s), GFP_KERNEL);
 	if (!s) {
@@ -437,7 +437,7 @@ int mitee_memlog_probe(struct ffa_device *ffa_dev, const struct ffa_ops *ops,
 	s->b_get = 0;
 	read_b_buf = false;
 
-	rc = ops->msg_ops->sync_send_receive(ffa_dev, &data);
+	rc = optee->comm_ops->call(&data);
 	if (rc) {
 		pr_err("miteelog service not available %d\n", rc);
 		result = -EIO;
@@ -475,7 +475,8 @@ int mitee_memlog_probe(struct ffa_device *ffa_dev, const struct ffa_ops *ops,
 				   s);
 	if (!s->proc) {
 		pr_info("mitee_log proc_create failed!\n");
-		return -ENOMEM;
+		result = -ENOMEM;
+		goto error_create_log_proc;
 	}
 
 	/* create /proc/mitee_log_key */
@@ -483,11 +484,16 @@ int mitee_memlog_probe(struct ffa_device *ffa_dev, const struct ffa_ops *ops,
 				       &mitee_memlog_key_fops, s);
 	if (!s->proc_key) {
 		pr_info("mitee_log proc_key_create failed!\n");
-		return -ENOMEM;
+		result = -ENOMEM;
+		goto error_create_key_proc;
 	}
 
 	return 0;
 
+error_create_key_proc:
+	proc_remove(s->proc);
+error_create_log_proc:
+	mitee_call_notifier_unregister(&s->call_notifier);
 error_call_notifier:
 //TODO notify tee we failed register notifier
 // trusty_std_call32(s->trusty_dev, SMC_SC_SHARED_LOG_RM,
@@ -509,7 +515,7 @@ int mitee_memlog_remove(struct platform_device *pdev)
 	if (!s)
 		return 0;
 
-	dev_dbg(&pdev->dev, "%s\n", __func__);
+	dev_printk(KERN_DEBUG, &pdev->dev, "%s\n", __func__);
 	proc_remove(s->proc);
 	proc_remove(s->proc_key);
 	mitee_call_notifier_unregister(&s->call_notifier);

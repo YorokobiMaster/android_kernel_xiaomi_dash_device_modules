@@ -14,6 +14,7 @@
  */
 
 #include <linux/device.h>
+#include <linux/arm_ffa.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/mm.h>
@@ -23,6 +24,7 @@
 #include <linux/mm_types.h>
 #include <linux/gfp.h>
 #include "dynamic_mem.h"
+#include "optee_private.h"
 
 static struct mitee_dynamic_mem_queue memory_queue;
 
@@ -74,7 +76,7 @@ void mitee_dynamic_mem_remove_node(uint64_t mem_handle)
 	struct mem_desc *tmp = NULL;
 
 	mutex_lock(&queue->mem_mut);
-	list_for_each_entry_safe (desc, tmp, &queue->mem_node, node) {
+	list_for_each_entry_safe(desc, tmp, &queue->mem_node, node) {
 		if (desc->global_id == mem_handle) {
 			list_del(&desc->node);
 			break;
@@ -82,9 +84,8 @@ void mitee_dynamic_mem_remove_node(uint64_t mem_handle)
 	}
 	mutex_unlock(&queue->mem_mut);
 
-	if (!desc) {
+	if (!desc)
 		pr_err("mitee dynamic mem: unknown pagelist 0x%llx\n", mem_handle);
-	}
 
 	kfree(desc);
 	return;
@@ -97,10 +98,9 @@ struct mem_desc *mitee_dynamic_mem_find_node(uint64_t mem_handle)
 	struct mem_desc *tmp = NULL;
 
 	mutex_lock(&queue->mem_mut);
-	list_for_each_entry_safe (desc, tmp, &queue->mem_node, node) {
-		if (desc->global_id == mem_handle) {
+	list_for_each_entry_safe(desc, tmp, &queue->mem_node, node) {
+		if (desc->global_id == mem_handle)
 			break;
-		}
 	}
 	mutex_unlock(&queue->mem_mut);
 
@@ -216,6 +216,4 @@ void mitee_dynamic_mem_init(void)
 
 void mitee_dynamic_mem_deinit(void)
 {
-	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
-	mutex_destroy(&queue->mem_mut);
 }

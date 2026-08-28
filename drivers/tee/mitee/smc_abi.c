@@ -904,7 +904,8 @@ static int optee_smc_open(struct tee_context *ctx)
 	struct optee *optee = tee_get_drvdata(ctx->teedev);
 	u32 sec_caps = optee->smc.sec_caps;
 
-	return optee_open(ctx, sec_caps & OPTEE_SMC_SEC_CAP_MEMREF_NULL);
+	return optee_open_common(ctx,
+				 sec_caps & OPTEE_SMC_SEC_CAP_MEMREF_NULL);
 }
 
 static const struct tee_driver_ops optee_clnt_ops = {

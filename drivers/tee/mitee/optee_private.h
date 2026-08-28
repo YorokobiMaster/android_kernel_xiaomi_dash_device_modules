@@ -7,8 +7,10 @@
 #define OPTEE_PRIVATE_H
 
 #include <linux/arm-smccc.h>
+#include <linux/mm.h>
 #include <linux/rhashtable.h>
 #include <linux/semaphore.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 
 #include <tee_drv.h>
@@ -100,23 +102,31 @@ struct optee_smc {
 	u32 sec_caps;
 };
 
-/**
- * struct optee_ffa_data -  FFA communication struct
- * @ffa_dev		FFA device, contains the destination id, the id of
- *			OP-TEE in secure world
- * @ffa_ops		FFA operations
- * @mutex		Serializes access to @global_ids
- * @global_ids		FF-A shared memory global handle translation
- */
-struct optee_ffa {
-	struct ffa_device *ffa_dev;
-	/* Serializes access to @global_ids */
-	struct mutex mutex;
-	struct rhashtable global_ids;
-	void *memremaped_shm;
+struct optee;
+struct ffa_device;
+struct ffa_send_direct_data;
+
+enum mitee_comm_type {
+	MITEE_COMM_FFA = 0,
 };
 
-struct optee;
+struct mitee_comm_ops {
+	enum mitee_comm_type type;
+	int (*register_abi)(void);
+	void (*unregister_abi)(void);
+	int (*call)(struct ffa_send_direct_data *data);
+	void (*from_msg_param_mem)(struct optee *optee,
+				   struct tee_param *param, u32 attr,
+				   const struct optee_msg_param *msg_param);
+	int (*to_msg_param_mem)(struct optee_msg_param *msg_param,
+				const struct tee_param *param);
+	int (*shm_register)(struct tee_context *ctx, struct tee_shm *shm,
+			    struct page **pages, size_t num_pages,
+			    unsigned long start);
+	int (*shm_unregister)(struct tee_context *ctx, struct tee_shm *shm);
+	int (*shm_unregister_supp)(struct tee_context *ctx,
+				   struct tee_shm *shm);
+};
 
 /**
  * struct optee_ops - OP-TEE driver internal operations
@@ -161,10 +171,8 @@ struct optee {
 	struct tee_device *supp_teedev;
 	struct tee_device *teedev;
 	const struct optee_ops *ops;
-	union {
-		struct optee_smc smc;
-		struct optee_ffa ffa;
-	};
+	const struct mitee_comm_ops *comm_ops;
+	void *memremaped_shm;
 	struct optee_call_queue call_queue;
 	struct optee_wait_queue wait_queue;
 	struct mitee_rpc_callback_queue cb_queue;
@@ -246,14 +254,54 @@ int optee_cancel_req(struct tee_context *ctx, u32 cancel_id, u32 session);
 int optee_enumerate_devices(u32 func);
 void optee_unregister_devices(void);
 
-int optee_pool_op_alloc_helper(
+static inline int optee_pool_op_alloc_helper(
 	struct tee_shm_pool_mgr *poolm, struct tee_shm *shm, size_t size,
 	int (*shm_register)(struct tee_context *ctx, struct tee_shm *shm,
 			    struct page **pages, size_t num_pages,
-			    unsigned long start));
+			    unsigned long start))
+{
+	unsigned int order = get_order(size);
+	struct page *page;
+	int rc = 0;
+
+	page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
+	if (!page)
+		return -ENOMEM;
+
+	shm->kaddr = page_address(page);
+	shm->paddr = page_to_phys(page);
+	shm->size = PAGE_SIZE << order;
+
+	if (shm_register) {
+		unsigned int nr_pages = 1 << order;
+		struct page **pages;
+		unsigned int i;
+
+		pages = kcalloc(nr_pages, sizeof(*pages), GFP_KERNEL);
+		if (!pages) {
+			rc = -ENOMEM;
+			goto err;
+		}
+
+		for (i = 0; i < nr_pages; i++)
+			pages[i] = page++;
+
+		shm->flags |= TEE_SHM_REGISTER;
+		rc = shm_register(shm->ctx, shm, pages, nr_pages,
+				  (unsigned long)shm->kaddr);
+		kfree(pages);
+		if (rc)
+			goto err;
+	}
+
+	return 0;
+err:
+	__free_pages(page, order);
+	return rc;
+}
 
 void optee_remove_common(struct optee *optee);
-int optee_open(struct tee_context *ctx, bool cap_memref_null);
+int optee_open_common(struct tee_context *ctx, bool cap_memref_null);
 void optee_release(struct tee_context *ctx);
 void optee_release_supp(struct tee_context *ctx);
 
@@ -289,8 +337,6 @@ struct tee_shm *optee_rpc_cmd_alloc_suppl(struct tee_context *ctx, size_t sz);
 void optee_rpc_cmd_free_suppl(struct tee_context *ctx, struct tee_shm *shm);
 void optee_rpc_cmd(struct tee_context *ctx, struct optee *optee,
 		   struct optee_msg_arg *arg);
-void mitee_handle_rpc(struct tee_context *ctx, struct optee_msg_arg *arg);
-
 /*
  * Small helpers
  */
@@ -309,10 +355,18 @@ static inline void reg_pair_from_64(u32 *reg0, u32 *reg1, u64 val)
 /* Registration of the ABIs */
 int optee_smc_abi_register(void);
 void optee_smc_abi_unregister(void);
-int optee_ffa_abi_register(void);
-void optee_ffa_abi_unregister(void);
+int mitee_ffa_register(void);
+void mitee_ffa_unregister(void);
+int mitee_ffa_call(struct ffa_send_direct_data *data);
+void from_msg_param_ffa_mem(struct optee *optee, struct tee_param *param,
+			    u32 attr,
+			    const struct optee_msg_param *msg_param);
+int to_msg_param_ffa_mem(struct optee_msg_param *msg_param,
+			 const struct tee_param *param);
+extern const struct mitee_comm_ops mitee_ffa_comm_ops;
 
 struct optee *get_optee_drv_state(void);
+int mitee_proc_init(void);
 
 enum { MITEE_CALL_PREPARE,
        MITEE_CALL_RETURNED,
