@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Source reconstruction of the Xiaomi stock debug_ext kernel module for
+ * Redmi Turbo 5 Max (dash), based on the shipped binary, symbols,
+ * relocations, disassembly, and decompilation.
+ *
+ * The stock module reports "GPL v2" via MODULE_LICENSE.
+ * Original authorship and copyright could not be reliably determined.
+ *
+ * Reconstruction by GitHub @YorokobiMaster, 2026.
+ */
 
 #include <linux/errno.h>
 #include <linux/fs.h>
