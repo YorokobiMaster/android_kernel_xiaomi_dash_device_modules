@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2021 XiaoMi, Inc.
- *               2022 The LineageOS Project
- * Modifications Copyright (C) 2026 YorokobiMaster (GitHub: @YorokobiMaster)
+ * Copyright (C) 2022 The LineageOS Project
+ * Copyright (C) 2026 YorokobiMaster
  */
 
 #ifndef __HWID_H__
