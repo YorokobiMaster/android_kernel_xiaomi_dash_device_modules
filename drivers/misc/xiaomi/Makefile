@@ -21,4 +21,12 @@ obj-$(CONFIG_XIAOMI_DEBUG_EXT) += debug_ext/
 
 obj-$(CONFIG_XIAOMI_PERF_HELPER) += perf_helper/
 
+obj-$(CONFIG_XIAOMI_MI_STACK) += mi_stack/
+
+obj-$(CONFIG_XIAOMI_MI_UBT) += mi_ubt/
+
+obj-$(CONFIG_XIAOMI_MI_UBT_TEST) += mi_ubt_test/
+
+obj-$(CONFIG_XIAOMI_CRASH_MODULE) += crash_module/
+
 obj-$(CONFIG_XIAOMI_MI_MEMORY) += mi_memory/

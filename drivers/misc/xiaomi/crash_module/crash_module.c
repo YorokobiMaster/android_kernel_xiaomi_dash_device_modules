@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Reconstructed from the Redmi Turbo 5 Max stock kernel module.
+ * Reconstruction by YorokobiMaster.
+ */
 
 #include <linux/errno.h>
 #include <linux/fs.h>

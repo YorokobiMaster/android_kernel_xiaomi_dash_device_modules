@@ -1,4 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Stock-derived interface reconstructed from the Redmi Turbo 5 Max stock
+ * kernel module by YorokobiMaster.
+ *
+ * Subsequent MTK/ACK integration by YorokobiMaster for this project.
+ */
+
 #ifndef _UFS_MEDIATEK_XIAOMI_H
 #define _UFS_MEDIATEK_XIAOMI_H
 

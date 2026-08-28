@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config XIAOMI_MI_STACK
+	tristate "Xiaomi task kernel stack dumper"
+	depends on PROC_FS
+	help
+	  Expose Xiaomi's PID selector and per-task kernel call trace under
+	  /proc/mi_stack.

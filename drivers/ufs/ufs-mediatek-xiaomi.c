@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Xiaomi UFS compatibility hooks used by the vendor storage diagnostics.
+ * Stock-derived portions reconstructed from the Redmi Turbo 5 Max stock
+ * kernel module by YorokobiMaster.
+ *
+ * Subsequent MTK/ACK integration by YorokobiMaster for this project.
  */
 
 #include <linux/errno.h>

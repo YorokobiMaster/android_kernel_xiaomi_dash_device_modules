@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config XIAOMI_MI_UBT
+	tristate "Xiaomi user backtrace dumper"
+	depends on ARM64
+	help
+	  Unwind AArch64 user frame-pointer chains for Xiaomi panic diagnostics.

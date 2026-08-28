@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config XIAOMI_MI_UBT_TEST
+	tristate "Xiaomi user backtrace test"
+	depends on PROC_FS
+	depends on XIAOMI_MI_UBT

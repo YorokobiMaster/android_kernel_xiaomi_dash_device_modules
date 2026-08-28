@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Xiaomi Memory Debug Interface reconstructed from the dash stock module. */
+/*
+ * Reconstructed from the Redmi Turbo 5 Max stock kernel module.
+ * Reconstruction by YorokobiMaster.
+ *
+ * Portions of the SCSI request path are adapted from the Linux SCSI
+ * queueing library:
+ * Copyright (C) 1999 Eric Youngdale
+ * Copyright (C) 2014 Christoph Hellwig
+ */
 
 #include <linux/debugfs.h>
 #include <linux/device.h>

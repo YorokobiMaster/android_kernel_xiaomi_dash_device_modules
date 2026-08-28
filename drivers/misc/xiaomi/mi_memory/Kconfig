@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
+
 config XIAOMI_MI_MEMORY
 	tristate "Xiaomi memory diagnostics"
 	depends on OF && SCSI
