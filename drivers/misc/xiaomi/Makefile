@@ -20,3 +20,5 @@ obj-$(CONFIG_CAM_INTENTAWARE_FSYS) += cam_intentaware_fsys/
 obj-$(CONFIG_XIAOMI_DEBUG_EXT) += debug_ext/
 
 obj-$(CONFIG_XIAOMI_PERF_HELPER) += perf_helper/
+
+obj-$(CONFIG_XIAOMI_MI_MEMORY) += mi_memory/
