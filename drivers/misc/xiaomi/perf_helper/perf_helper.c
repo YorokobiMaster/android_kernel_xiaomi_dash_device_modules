@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Xiaomi performance and memory helper compatibility driver.
- *
- * Reimplemented from the dash OS3.0.305 stock perf_helper.ko interface and
- * control-flow contract. The implementation deliberately fixes unsafe stock
- * teardown, parser ownership, and ring-index bugs while retaining the external
- * ABI and reclaim policy.
+ * Reimplemented for this project from the observable interfaces and
+ * behavior of the Xiaomi stock perf_helper kernel module.
  */
 
 #include <linux/atomic.h>
@@ -40,6 +36,8 @@
 #define PERF_RECLAIM_TYPE_BASE	10000000U
 #define PERF_RECLAIM_RETRIES	10
 #define PERF_RECLAIM_WAKE_MS	30000
+/* Exact stock memory.reclaim_once option; bit 0 is unnamed in this kernel. */
+#define PERF_STOCK_MEMCG_RECLAIM_OPTIONS	1U
 
 struct perf_log_record {
 	char text[PERF_RECORD_LEN];
@@ -116,6 +114,7 @@ static bool memcg_files_registered;
 static int perf_copy_user_string(char *dst, size_t dst_size,
 				 const char __user *src, size_t count)
 {
+	/* Safety fix vs stock: reserve and write a terminating NUL. */
 	if (count >= dst_size)
 		return -EINVAL;
 	if (copy_from_user(dst, src, count))
@@ -285,6 +284,7 @@ static int mimd_log_show(struct seq_file *m, void *unused)
 	int ret;
 
 	raw_spin_lock(&mimd_log_lock);
+	/* Safety fix vs stock: use the MIMD ring's own wrap index. */
 	ret = perf_log_show(m, mimd_records, mimd_count, mimd_next);
 	raw_spin_unlock(&mimd_log_lock);
 	return ret;
@@ -312,8 +312,10 @@ static const struct proc_ops mimd_log_ops = {
 
 static unsigned long perf_reclaim_pages(struct mem_cgroup *memcg,
 					unsigned long target,
+					unsigned int reclaim_options,
 					bool stop_on_no_progress,
-					bool stop_on_foreground)
+					bool stop_on_foreground,
+					int per_attempt_scan_type)
 {
 	unsigned long reclaimed = 0;
 	unsigned long remaining = target;
@@ -321,8 +323,12 @@ static unsigned long perf_reclaim_pages(struct mem_cgroup *memcg,
 	unsigned int attempt;
 
 	for (attempt = 0; attempt < PERF_RECLAIM_RETRIES && remaining; attempt++) {
+		if (per_attempt_scan_type >= 0)
+			WRITE_ONCE(reclaim_scan_type, per_attempt_scan_type);
 		current_reclaimed = try_to_free_mem_cgroup_pages(
-			memcg, remaining, GFP_KERNEL, MEMCG_RECLAIM_MAY_SWAP);
+			memcg, remaining, GFP_KERNEL, reclaim_options);
+		if (per_attempt_scan_type >= 0)
+			WRITE_ONCE(reclaim_scan_type, 0);
 		reclaimed += current_reclaimed;
 
 		if (stop_on_no_progress && !current_reclaimed)
@@ -353,11 +359,16 @@ static unsigned long perf_reclaim_pages(struct mem_cgroup *memcg,
 	return reclaimed;
 }
 
-static void perf_set_scan_type(u32 packed_target)
+static int perf_decode_scan_type(u64 packed_target)
 {
-	int type = packed_target / PERF_RECLAIM_TYPE_BASE;
+	u64 type = packed_target / PERF_RECLAIM_TYPE_BASE;
 
-	WRITE_ONCE(reclaim_scan_type, type == 2 || type == 3 ? type : 0);
+	return type == 2 || type == 3 ? (int)type : 0;
+}
+
+static void perf_set_scan_type(u64 packed_target)
+{
+	WRITE_ONCE(reclaim_scan_type, perf_decode_scan_type(packed_target));
 }
 
 static void perf_tune_scan_type(void *unused, enum scan_balance *balance)
@@ -401,7 +412,18 @@ static int global_reclaim_thread(void *unused)
 
 			__pm_wakeup_event(reclaim_ws, PERF_RECLAIM_WAKE_MS);
 			perf_set_scan_type(target);
-			reclaimed = perf_reclaim_pages(NULL, pages, false, false);
+			reclaimed = perf_reclaim_pages(
+				NULL, pages, MEMCG_RECLAIM_MAY_SWAP,
+				false, false, -1);
+			/*
+			 * Stock performs an eleventh global reclaim when ten counted
+			 * attempts fall short, but does not include its result in the
+			 * reported total.
+			 */
+			if (reclaimed < pages)
+				try_to_free_mem_cgroup_pages(
+					NULL, pages - reclaimed, GFP_KERNEL,
+					MEMCG_RECLAIM_MAY_SWAP);
 			WRITE_ONCE(reclaim_scan_type, 0);
 			pr_err("perf_helper %s reclaimed: %lu kbytes\n",
 			       __func__, reclaimed << (PAGE_SHIFT - 10));
@@ -424,6 +446,7 @@ static int global_reclaim_thread(void *unused)
 
 static int global_reclaim_show(struct seq_file *m, void *unused)
 {
+	/* Safety fix vs stock: pair the reader with the status writer's lock. */
 	raw_spin_lock(&reclaim_status_lock);
 	seq_printf(m, "%s", reclaim_status);
 	raw_spin_unlock(&reclaim_status_lock);
@@ -544,6 +567,7 @@ static ssize_t kdamond_cpuset_write(struct file *file,
 	allocation = kstrndup(input, 32, GFP_KERNEL);
 	if (!allocation)
 		return -ENOMEM;
+	/* Safety fix vs stock: keep the allocation base separate from strsep. */
 	cursor = allocation;
 	cpu_list = strsep(&cursor, ";");
 	pid_text = strsep(&cursor, ";");
@@ -555,6 +579,7 @@ static ssize_t kdamond_cpuset_write(struct file *file,
 	cpumask_clear(&mask);
 	while ((token = strsep(&cpu_list, ",")) != NULL) {
 		ret = kstrtoint(token, 10, &cpu);
+		/* Safety fix vs stock: reject CPU IDs outside cpumask storage. */
 		if (ret || cpu < 0 || cpu >= nr_cpumask_bits) {
 			pr_err("Failed to convert string to integer\n");
 			ret = -EINVAL;
@@ -572,6 +597,7 @@ static ssize_t kdamond_cpuset_write(struct file *file,
 
 	rcu_read_lock();
 	task = find_task_by_vpid(pid);
+	/* Safety fix vs stock: keep the task alive after dropping RCU. */
 	if (task)
 		get_task_struct(task);
 	rcu_read_unlock();
@@ -729,6 +755,7 @@ static ssize_t exception_write(struct file *file, const char __user *buffer,
 	for (i = 0; i < exception_count; i++) {
 		record = &exceptions[i];
 		if (!strcmp(text, record->text)) {
+			/* Safety fix vs stock: saturate instead of duplicating at INT_MAX. */
 			if (record->repeats < INT_MAX)
 				record->repeats++;
 			raw_spin_unlock(&exception_lock);
@@ -763,6 +790,7 @@ static ssize_t memcg_reclaim_once(struct kernfs_open_file *of, char *buffer,
 	u64 packed_target;
 	unsigned long pages;
 	unsigned long reclaimed;
+	int scan_type;
 	int ret;
 
 	ret = kstrtoull(strim(buffer), 10, &packed_target);
@@ -779,9 +807,10 @@ static ssize_t memcg_reclaim_once(struct kernfs_open_file *of, char *buffer,
 	mutex_unlock(&memcg_lock);
 
 	pages = packed_target % PERF_RECLAIM_TYPE_BASE;
-	perf_set_scan_type((u32)packed_target);
-	reclaimed = perf_reclaim_pages(memcg, pages, true, true);
-	WRITE_ONCE(reclaim_scan_type, 0);
+	scan_type = perf_decode_scan_type(packed_target);
+	reclaimed = perf_reclaim_pages(
+		memcg, pages, PERF_STOCK_MEMCG_RECLAIM_OPTIONS,
+		true, true, scan_type);
 	pr_err("perf_helper %s reclaimed: %lu kbytes\n",
 	       __func__, reclaimed << (PAGE_SHIFT - 10));
 	return size;
@@ -810,6 +839,7 @@ static ssize_t memcg_process_fg(struct kernfs_open_file *of, char *buffer,
 	mutex_unlock(&memcg_lock);
 
 	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	/* Safety fix vs stock: handle allocation failure instead of dereferencing. */
 	if (!state)
 		return -ENOMEM;
 	state->memcg = memcg;
@@ -882,6 +912,7 @@ static int __init perf_helper_init(void)
 	cpumask_t reclaim_mask;
 	int ret;
 
+	/* Safety fix vs stock: fail and unwind instead of leaving a partial ABI. */
 	kswapd_task = perf_find_kernel_task("kswapd0", 7);
 	kcompactd_task = perf_find_kernel_task("kcompactd0", 10);
 
@@ -977,6 +1008,7 @@ err:
 
 static void __exit perf_helper_exit(void)
 {
+	/* Safety fix vs stock: unregister every callback and exposed interface. */
 	if (memcg_files_registered) {
 		cgroup_rm_cftypes(memcg_ctrl_files);
 		memcg_files_registered = false;
