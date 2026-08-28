@@ -17,8 +17,9 @@ static ssize_t crash_module_procs_read(struct file *file, char __user *buf,
 {
 	int ret;
 
-	ret = simple_read_from_buffer(buf, count, ppos, page, strlen(page));
-	pr_err("%s: failed...page:%s\n", __func__, page);
+	ret = simple_read_from_buffer(buf, count, ppos, page,
+				      strnlen(page, sizeof(page)));
+	pr_err("%s: failed\npage:%s\n", __func__, page);
 	return ret;
 }
 
@@ -27,9 +28,9 @@ static ssize_t crash_module_procs_write(struct file *file,
 {
 	int ret;
 
-	count = min_t(size_t, count, sizeof(page));
+	count = min_t(size_t, count, sizeof(page) - 1);
 	memset(page, 0, sizeof(page));
-	ret = simple_write_to_buffer(page, sizeof(page), ppos, buf, count);
+	ret = simple_write_to_buffer(page, sizeof(page) - 1, ppos, buf, count);
 	pr_err("%s:page:%s\n", __func__, page);
 	return ret;
 }
