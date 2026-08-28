@@ -16,7 +16,7 @@ obj-$(CONFIG_DEVICE_MODULES_SCSI_UFS_MEDIATEK)  += ufs-mediatek-mod.o
 ifeq ($(CONFIG_UFS_MEDIATEK_MT6893),y)
 ufs-mediatek-mod-y				+= ../ufs-mediatek-perf.o ../ufs-mediatek-sysfs.o ../ufs-mediatek-mimic.o ../ufs-mediatek-mbrain.o
 else
-ufs-mediatek-mod-y                              += ../ufs-mediatek.o ../ufs-mediatek-sysfs.o ../ufs-mediatek-mimic.o ../ufs-mediatek-mbrain.o
+ufs-mediatek-mod-y                              += ../ufs-mediatek.o ../ufs-mediatek-xiaomi.o ../ufs-mediatek-sysfs.o ../ufs-mediatek-mimic.o ../ufs-mediatek-mbrain.o
 endif
 
 ufs-mediatek-mod-$(CONFIG_MTK_BLOCK_IO_TRACER)  += ../ufs-mediatek-btag.o
@@ -34,7 +34,7 @@ obj-$(CONFIG_DEVICE_MODULES_SCSI_UFS_MEDIATEK)      += ufs-mediatek-mod-ise.o
 ifeq ($(CONFIG_UFS_MEDIATEK_MT6893),y)
 ufs-mediatek-mod-ise-y                              += ../ufs-mediatek-perf.o ../ufs-mediatek-sysfs.o ../ufs-mediatek-mimic.o ../ufs-mediatek-mbrain.o
 else
-ufs-mediatek-mod-ise-y                              += ../ufs-mediatek.o ../ufs-mediatek-sysfs.o ../ufs-mediatek-mimic.o ../ufs-mediatek-mbrain.o
+ufs-mediatek-mod-ise-y                              += ../ufs-mediatek.o ../ufs-mediatek-xiaomi.o ../ufs-mediatek-sysfs.o ../ufs-mediatek-mimic.o ../ufs-mediatek-mbrain.o
 endif
 
 ufs-mediatek-mod-ise-$(CONFIG_MTK_BLOCK_IO_TRACER)  += ../ufs-mediatek-btag.o

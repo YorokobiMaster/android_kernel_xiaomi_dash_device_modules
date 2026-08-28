@@ -43,6 +43,7 @@
 #include "ufs-mediatek-rpmb.h"
 #include "ufs-mediatek-sip.h"
 #include "ufs-mediatek-sysfs.h"
+#include "ufs-mediatek-xiaomi.h"
 #include "ufs-mediatek.h"
 
 /* Power Throttling */
@@ -1719,6 +1720,7 @@ static int ufs_mtk_init(struct ufs_hba *hba)
 
 	ufs_mtk_rpmb_init(hba);
 	ufs_mb_init(hba);
+	ufs_xiaomi_register_hba(hba);
 
 	host->cpuhp_state = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN, "ufs:online",
 					ufs_mtk_cpu_online_notify, ufs_mtk_cpu_offline_notify);
@@ -2745,6 +2747,8 @@ static void ufs_mtk_event_notify(struct ufs_hba *hba,
 	struct timespec64 tv = { 0 };
 	struct ufs_event_hist *e;
 
+	ufshcd_update_err_state(evt, val);
+	ufshcd_update_uic_error_cnt(evt, val);
 	trace_ufs_mtk_event(evt, val);
 
 	/* error check for mbrain */
@@ -3211,6 +3215,7 @@ static void ufs_mtk_config_scsi_dev(struct scsi_device *sdev)
 	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
 
 	dev_dbg(hba->dev, "lu %llu slave configured", sdev->lun);
+	ufs_xiaomi_lun_configured(hba, sdev->lun);
 
 	blk_queue_flag_set(QUEUE_FLAG_SAME_FORCE, sdev->request_queue);
 	if (hba->luns_avail == 1) {
