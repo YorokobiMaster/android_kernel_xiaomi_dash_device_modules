@@ -13,6 +13,7 @@ typedef struct mitee_smc_notify_ctx {
 } mitee_smc_notify_ctx_t;
 
 void mitee_smc_notify_init(struct ffa_device *ffa_dev);
+void mitee_smc_notify_deinit(void);
 
 extern unsigned int mitee_smc_notify_connect(uint8_t module_id,  unsigned int magic_num);
 extern int mitee_smc_notify_signal(uint8_t module_id, unsigned int token, const uint8_t challenge);

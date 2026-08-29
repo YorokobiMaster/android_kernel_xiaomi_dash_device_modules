@@ -46,12 +46,22 @@ static int mitee_msg_enqueue(struct mitee_msg_queue *queue,
 			     const struct mitee_msg *msg)
 {
 	struct mitee_msg_ring *ring = queue->tx.ring;
+	u64 capacity;
 	u64 head;
 	u64 next;
 
 	mutex_lock(&queue->tx.lock);
+	capacity = READ_ONCE(ring->capacity);
+	if (capacity != MITEE_MSG_SLOT_COUNT) {
+		mutex_unlock(&queue->tx.lock);
+		return -EPROTO;
+	}
 	head = READ_ONCE(ring->head);
-	next = (head + 1) % READ_ONCE(ring->capacity);
+	if (head >= capacity || READ_ONCE(ring->tail) >= capacity) {
+		mutex_unlock(&queue->tx.lock);
+		return -EPROTO;
+	}
+	next = (head + 1) % capacity;
 	if (next == READ_ONCE(ring->tail)) {
 		pr_err("tx buf full\n");
 		mutex_unlock(&queue->tx.lock);
@@ -68,10 +78,23 @@ static int mitee_msg_dequeue(struct mitee_msg_queue *queue,
 			     struct mitee_msg *msg)
 {
 	struct mitee_msg_ring *ring = queue->rx.ring;
+	u64 capacity;
+	u64 head;
 	u64 tail;
 
 	mutex_lock(&queue->rx.lock);
-	if (READ_ONCE(ring->tail) == READ_ONCE(ring->head)) {
+	capacity = READ_ONCE(ring->capacity);
+	if (capacity != MITEE_MSG_SLOT_COUNT) {
+		mutex_unlock(&queue->rx.lock);
+		return -EPROTO;
+	}
+	/* Observe the secure producer index before consuming its slot. */
+	head = smp_load_acquire(&ring->head);
+	if (head >= capacity || READ_ONCE(ring->tail) >= capacity) {
+		mutex_unlock(&queue->rx.lock);
+		return -EPROTO;
+	}
+	if (READ_ONCE(ring->tail) == head) {
 		pr_err("rx buf empty\n");
 		mutex_unlock(&queue->rx.lock);
 		return -EBUSY;
@@ -81,7 +104,7 @@ static int mitee_msg_dequeue(struct mitee_msg_queue *queue,
 	memcpy(msg, &queue->rx.messages[tail], sizeof(*msg));
 	memset(&queue->rx.messages[tail], 0, sizeof(*msg));
 	smp_store_release(&ring->tail,
-			  (tail + 1) % READ_ONCE(ring->capacity));
+			  (tail + 1) % capacity);
 	mutex_unlock(&queue->rx.lock);
 	return 0;
 }
@@ -104,6 +127,7 @@ int mitee_msg_queue_init(struct mitee_msg_queue *queue)
 	queue->pa = virt_to_phys(va);
 	queue->size = MITEE_MSG_QUEUE_SIZE;
 	queue->buf_size = MITEE_MSG_BUF_SIZE;
+	queue->va = va;
 
 	mutex_init(&queue->rx.lock);
 	queue->rx.ring = va;
@@ -120,21 +144,19 @@ int mitee_msg_queue_init(struct mitee_msg_queue *queue)
 	return 0;
 }
 
-int mitee_msg_queue_deinit(struct mitee_msg_queue *queue)
+void mitee_msg_queue_deinit(struct mitee_msg_queue *queue)
 {
-	if (!queue) {
-		pr_err("invalid message queue\n");
-		return -EINVAL;
-	}
+	if (!queue || !queue->va)
+		return;
 
-	free_pages_exact(phys_to_virt(queue->pa), queue->size);
+	free_pages_exact(queue->va, queue->size);
+	queue->va = NULL;
+	queue->pa = 0;
 	pr_info("message queue destroyed\n");
-	return 0;
 }
 
-int mitee_msg_queue_register(void)
+int mitee_msg_queue_register(struct optee *optee)
 {
-	struct optee *optee = get_optee_drv_state();
 	struct ffa_send_direct_data data = {
 		.data0 = MITEE_FFA_MSG_QUEUE_REGISTER,
 		.data1 = optee->msg_queue.pa,
@@ -142,7 +164,7 @@ int mitee_msg_queue_register(void)
 	};
 	int rc;
 
-	if (!optee) {
+	if (!optee || !optee->msg_queue.va) {
 		pr_err("driver state is NULL\n");
 		return -EINVAL;
 	}
@@ -162,11 +184,22 @@ void mitee_task_list_init(struct mitee_task_list *tasks)
 
 void mitee_task_list_deinit(struct mitee_task_list *tasks)
 {
+	struct mitee_task *task;
+	int id;
+
+	mutex_lock(&tasks->lock);
+	idr_for_each_entry(&tasks->idr, task, id) {
+		pr_warn("discarding task %d during shutdown\n", id);
+		list_del_init(&task->node);
+		kfree(task);
+	}
+	mutex_unlock(&tasks->lock);
 	idr_destroy(&tasks->idr);
 }
 
-struct mitee_task *mitee_task_alloc(struct tee_context *ctx, u32 command,
-				    struct optee_msg_arg *arg)
+static struct mitee_task *mitee_task_alloc(struct tee_context *ctx,
+					   u32 command,
+					   struct optee_msg_arg *arg)
 {
 	struct optee *optee = tee_get_drvdata(ctx->teedev);
 	struct mitee_task *task;
@@ -176,39 +209,38 @@ struct mitee_task *mitee_task_alloc(struct tee_context *ctx, u32 command,
 	if (!task)
 		return ERR_PTR(-ENOMEM);
 
+	if (command != MITEE_MSG_CMD_CALL) {
+		kfree(task);
+		return ERR_PTR(-EINVAL);
+	}
+
 	task->ctx = ctx;
 	INIT_LIST_HEAD(&task->node);
 	init_completion(&task->completion);
 	task->command = command;
-	if (command != MITEE_MSG_CMD_CALL) {
-		pr_err("invalid task command: %u\n", command);
-		return ERR_PTR(-EINVAL);
-	}
+	task->arg = arg;
+	task->state = 1;
 
 	mutex_lock(&optee->tasks.lock);
 	id = idr_alloc(&optee->tasks.idr, task, 1, INT_MAX, GFP_KERNEL);
-	task->id = id;
-	if (id <= 0) {
-		mutex_unlock(&optee->tasks.lock);
-		return ERR_PTR(-EINVAL);
+	if (id > 0) {
+		task->id = id;
+		list_add_tail(&task->node, &optee->tasks.pending);
 	}
-	task->arg = arg;
-	task->state = 1;
-	list_add_tail(&task->node, &optee->tasks.pending);
 	mutex_unlock(&optee->tasks.lock);
+	if (id < 0) {
+		kfree(task);
+		return ERR_PTR(id);
+	}
 	return task;
 }
 
-void mitee_task_free(int id)
+static void mitee_task_free(struct optee *optee, int id)
 {
-	struct optee *optee = get_optee_drv_state();
 	struct mitee_task *task;
 
 	mutex_lock(&optee->tasks.lock);
-	task = idr_find(&optee->tasks.idr, id);
-	if (!task)
-		pr_warn("task id invalid: %d\n", id);
-	idr_remove(&optee->tasks.idr, id);
+	task = idr_remove(&optee->tasks.idr, id);
 	mutex_unlock(&optee->tasks.lock);
 	kfree(task);
 }
@@ -221,7 +253,7 @@ static struct mitee_task *mitee_task_take(struct optee *optee)
 	if (!list_empty(&optee->tasks.pending)) {
 		task = list_first_entry(&optee->tasks.pending,
 					struct mitee_task, node);
-		list_del(&task->node);
+		list_del_init(&task->node);
 	}
 	mutex_unlock(&optee->tasks.lock);
 	return task;
@@ -241,6 +273,8 @@ static __always_inline int mitee_msg_pack(struct mitee_msg *msg, int task_id,
 	msg->command = command;
 	if (arg) {
 		size = OPTEE_MSG_GET_ARG_SIZE(arg->num_params);
+		if (size > sizeof(msg->payload))
+			return -E2BIG;
 		memcpy(msg->payload, arg, size);
 	}
 	ktime_get_real_ts64(&ts);
@@ -261,7 +295,31 @@ static int mitee_msg_unpack(const struct mitee_msg *msg,
 	}
 
 	*arg = (struct optee_msg_arg *)msg->payload;
+	if (OPTEE_MSG_GET_ARG_SIZE((*arg)->num_params) > sizeof(msg->payload))
+		return -E2BIG;
 	return 0;
+}
+
+static void mitee_task_complete(struct optee *optee, int task_id,
+				const struct optee_msg_arg *arg, int error)
+{
+	struct mitee_task *task;
+
+	mutex_lock(&optee->tasks.lock);
+	task = idr_find(&optee->tasks.idr, task_id);
+	if (task && task->state != 4) {
+		task->result = error;
+		if (error) {
+			task->arg->ret = TEEC_ERROR_COMMUNICATION;
+			task->arg->ret_origin = TEEC_ORIGIN_COMMS;
+		} else {
+			memcpy(task->arg, arg,
+			       OPTEE_MSG_GET_ARG_SIZE(arg->num_params));
+		}
+		task->state = 4;
+		complete(&task->completion);
+	}
+	mutex_unlock(&optee->tasks.lock);
 }
 
 static void handle_rpc_shm_alloc(struct tee_context *ctx,
@@ -355,23 +413,56 @@ static void handle_rpc(struct tee_context *ctx, struct optee_msg_arg *arg)
 	}
 }
 
+static bool supp_ready(struct optee *optee)
+{
+	return READ_ONCE(optee->supp.ctx) || READ_ONCE(optee->shutting_down);
+}
+
+static bool mitee_call_slot_ready(struct optee *optee)
+{
+	unsigned int n;
+
+	if (READ_ONCE(optee->shutting_down))
+		return true;
+	if (READ_ONCE(optee->active_calls) >=
+	    READ_ONCE(optee->concurrency_limit))
+		return false;
+	for (n = 0; n < MITEE_WORKER_COUNT; n++) {
+		if (!atomic_read(&optee->workers[n].busy))
+			return true;
+	}
+	return false;
+}
+
+static void mitee_worker_release(struct mitee_worker *worker)
+{
+	atomic_set(&worker->busy, 0);
+	wake_up_all(&worker->optee->concurrency_wq);
+}
+
 int mitee_worker_fn(void *data)
 {
 	struct mitee_worker *worker = data;
 	struct optee *optee = worker->optee;
 	struct mitee_task *task;
+	struct tee_context *rpc_ctx;
+	wait_queue_head_t *supp_wq = &optee->supp_ctx_wq;
 	struct optee_msg_arg *arg;
 	struct mitee_msg msg;
 	struct mitee_msg reply;
 	struct ffa_send_direct_data ffa_data;
 	int response_task_id;
+	int request_task_id;
 	int rc;
 
 	atomic_inc(&optee->workers_started);
-	BUG_ON(worker->id >= MITEE_WORKER_COUNT);
+	if (WARN_ON(worker->id >= MITEE_WORKER_COUNT))
+		return -EINVAL;
 
-	for (;;) {
+	while (!kthread_should_stop()) {
 		wait_for_completion(&worker->work);
+		if (kthread_should_stop())
+			break;
 
 		if (!(current->flags & PF_NO_SETAFFINITY)) {
 			rc = set_cpus_allowed_ptr(current, &optee->cpus_allowed);
@@ -382,9 +473,10 @@ int mitee_worker_fn(void *data)
 		task = mitee_task_take(optee);
 		if (!task) {
 			pr_err("task list empty\n");
-			atomic_set(&worker->busy, 0);
+			mitee_worker_release(worker);
 			continue;
 		}
+		request_task_id = task->id;
 
 		rc = mitee_msg_pack(&msg, task->id, task->command, task->arg);
 		if (rc)
@@ -425,11 +517,19 @@ int mitee_worker_fn(void *data)
 				goto task_error;
 			response_task_id = msg.task_id;
 
-			while (!READ_ONCE(optee->supp.ctx))
-				msleep_interruptible(100);
-
 			if (msg.command == MITEE_MSG_CMD_RPC) {
-				handle_rpc(optee->supp.ctx, arg);
+				for (;;) {
+					rc = wait_event_interruptible(*supp_wq, supp_ready(optee));
+					if (rc || READ_ONCE(optee->shutting_down)) {
+						rc = rc ?: -ESHUTDOWN;
+						goto task_error;
+					}
+					rpc_ctx = optee_supp_get_ctx(&optee->supp);
+					if (rpc_ctx)
+						break;
+				}
+				handle_rpc(rpc_ctx, arg);
+				optee_supp_put_ctx(&optee->supp);
 				rc = mitee_msg_pack(&reply, response_task_id,
 						    MITEE_MSG_CMD_RPC_REPLY, arg);
 				if (rc)
@@ -439,23 +539,18 @@ int mitee_worker_fn(void *data)
 			}
 
 			if (msg.command == MITEE_MSG_CMD_DONE) {
-				struct mitee_task *done;
+				bool found;
 
 				mutex_lock(&optee->tasks.lock);
-				done = idr_find(&optee->tasks.idr,
-						response_task_id);
-				if (done) {
-					memcpy(done->arg, arg,
-					       OPTEE_MSG_GET_ARG_SIZE(arg->num_params));
-					done->state = 4;
-					atomic_set(&worker->busy, 0);
-					complete(&done->completion);
-				}
+				found = idr_find(&optee->tasks.idr,
+						 response_task_id) != NULL;
 				mutex_unlock(&optee->tasks.lock);
-				if (!done) {
+				if (!found) {
 					rc = -EINVAL;
 					goto task_error;
 				}
+				mitee_task_complete(optee, response_task_id, arg, 0);
+				mitee_worker_release(worker);
 				break;
 			}
 
@@ -466,9 +561,101 @@ int mitee_worker_fn(void *data)
 
 task_error:
 		pr_err("worker %u call failed: %d\n", worker->id, rc);
-		atomic_set(&worker->busy, 0);
-		BUG_ON(rc);
+		mitee_worker_release(worker);
+		mitee_task_complete(optee, request_task_id, NULL, rc);
 	}
+
+	mitee_worker_release(worker);
+	return 0;
+}
+
+int mitee_workers_init(struct optee *optee)
+{
+	unsigned int n;
+
+	atomic_set(&optee->workers_started, 0);
+	for (n = 0; n < MITEE_WORKER_COUNT; n++) {
+		struct mitee_worker *worker = &optee->workers[n];
+
+		worker->id = n;
+		worker->optee = optee;
+		atomic_set(&worker->busy, 0);
+		init_completion(&worker->work);
+		worker->thread = kthread_run(mitee_worker_fn, worker,
+					     "mitee_worker/%u", n);
+		if (IS_ERR(worker->thread)) {
+			int rc = PTR_ERR(worker->thread);
+
+			worker->thread = NULL;
+			mitee_workers_deinit(optee);
+			return rc;
+		}
+	}
+	return 0;
+}
+
+void mitee_workers_deinit(struct optee *optee)
+{
+	unsigned int n;
+
+	WRITE_ONCE(optee->shutting_down, true);
+	wake_up_all(&optee->supp_ctx_wq);
+	wake_up_all(&optee->concurrency_wq);
+	for (n = 0; n < MITEE_WORKER_COUNT; n++) {
+		struct mitee_worker *worker = &optee->workers[n];
+
+		if (!worker->thread)
+			continue;
+		complete(&worker->work);
+		kthread_stop(worker->thread);
+		worker->thread = NULL;
+	}
+}
+
+static int mitee_call_slot_get(struct optee *optee,
+			       struct mitee_worker **worker)
+{
+	unsigned int n;
+	int rc;
+	wait_queue_head_t *call_wq = &optee->concurrency_wq;
+
+	for (;;) {
+		rc = wait_event_interruptible(*call_wq, mitee_call_slot_ready(optee));
+		if (rc)
+			return rc;
+
+		mutex_lock(&optee->concurrency_lock);
+		if (optee->shutting_down) {
+			mutex_unlock(&optee->concurrency_lock);
+			return -ESHUTDOWN;
+		}
+		if (optee->active_calls >= optee->concurrency_limit) {
+			mutex_unlock(&optee->concurrency_lock);
+			continue;
+		}
+
+		for (n = 0; n < MITEE_WORKER_COUNT; n++) {
+			if (atomic_cmpxchg(&optee->workers[n].busy, 0, 1))
+				continue;
+			*worker = &optee->workers[n];
+			optee->active_calls++;
+			mutex_unlock(&optee->concurrency_lock);
+			return 0;
+		}
+		mutex_unlock(&optee->concurrency_lock);
+	}
+}
+
+static void mitee_call_slot_put(struct optee *optee)
+{
+	mutex_lock(&optee->concurrency_lock);
+	if (WARN_ON(!optee->active_calls)) {
+		mutex_unlock(&optee->concurrency_lock);
+		return;
+	}
+	optee->active_calls--;
+	mutex_unlock(&optee->concurrency_lock);
+	wake_up(&optee->concurrency_wq);
 }
 
 int optee_do_call_with_arg(struct tee_context *ctx,
@@ -478,11 +665,10 @@ int optee_do_call_with_arg(struct tee_context *ctx,
 	struct mitee_task *task;
 	struct mitee_worker *worker = NULL;
 	cpumask_t saved_mask;
-	unsigned int n;
 	int task_id;
 	int rc;
 
-	rc = down_interruptible(&optee->concurrency);
+	rc = mitee_call_slot_get(optee, &worker);
 	if (rc)
 		return rc;
 
@@ -493,32 +679,22 @@ int optee_do_call_with_arg(struct tee_context *ctx,
 			pr_warn("caller affinity failed: %d\n", rc);
 	}
 
-	for (n = 0; n < MITEE_WORKER_COUNT; n++) {
-		if (atomic_cmpxchg(&optee->workers[n].busy, 0, 1) == 0) {
-			worker = &optee->workers[n];
-			break;
-		}
-	}
-	if (!worker) {
-		pr_err("all workers are busy\n");
-		rc = 0;
-		goto out;
-	}
-
 	task = mitee_task_alloc(ctx, MITEE_MSG_CMD_CALL, arg);
 	if (IS_ERR(task)) {
 		pr_err("failed to allocate task: %ld\n", PTR_ERR(task));
-		rc = -ENOMEM;
+		rc = PTR_ERR(task);
+		mitee_worker_release(worker);
 		goto out;
 	}
 
 	complete(&worker->work);
 	wait_for_completion(&task->completion);
-	rc = 0;
+	rc = task->result;
 	task_id = task->id;
-	mitee_task_free(task_id);
+	mitee_task_free(optee, task_id);
 out:
-	up(&optee->concurrency);
-	set_cpus_allowed_ptr(current, &saved_mask);
+	mitee_call_slot_put(optee);
+	if (!(current->flags & PF_NO_SETAFFINITY))
+		set_cpus_allowed_ptr(current, &saved_mask);
 	return rc;
 }

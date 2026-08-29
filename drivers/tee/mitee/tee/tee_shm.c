@@ -62,11 +62,16 @@ static void tee_shm_release(struct tee_device *teedev, struct tee_shm *shm)
 	} else if (shm->flags & TEE_SHM_REGISTER) {
 		int rc = teedev->desc->ops->shm_unregister(shm->ctx, shm);
 
-		if (rc)
+		if (rc) {
 			dev_err(teedev->dev.parent,
-				"unregister shm %p failed: %d", shm, rc);
-
-		release_registered_pages(shm);
+				"unregister shm %p failed: %d; retaining page ownership",
+				shm, rc);
+			/* Secure world may still access these pages. */
+			kfree(shm->pages);
+			shm->pages = NULL;
+		} else {
+			release_registered_pages(shm);
+		}
 	}
 
 	teedev_ctx_put(shm->ctx);
@@ -174,6 +179,7 @@ struct tee_shm *tee_shm_register(struct tee_context *ctx, unsigned long addr,
 	int rc;
 	int num_pages;
 	unsigned long start;
+	bool secure_owns_pages = false;
 
 	if (flags != req_user_flags && flags != req_kernel_flags)
 		return ERR_PTR(-ENOTSUPP);
@@ -237,6 +243,7 @@ struct tee_shm *tee_shm_register(struct tee_context *ctx, unsigned long addr,
 	rc = teedev->desc->ops->shm_register(ctx, shm, shm->pages,
 					     shm->num_pages, start);
 	if (rc) {
+		secure_owns_pages = rc == -EOWNERDEAD;
 		ret = ERR_PTR(rc);
 		goto err;
 	}
@@ -249,7 +256,13 @@ err:
 			idr_remove(&teedev->idr, shm->id);
 			mutex_unlock(&teedev->mutex);
 		}
-		release_registered_pages(shm);
+		if (secure_owns_pages) {
+			/* The FF-A reclaim failed; retain all page references. */
+			kfree(shm->pages);
+			shm->pages = NULL;
+		} else {
+			release_registered_pages(shm);
+		}
 	}
 	kfree(shm);
 	teedev_ctx_put(ctx);

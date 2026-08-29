@@ -32,8 +32,9 @@ struct mitee_dynamic_mem_queue {
 };
 
 int mitee_dynamic_mem_add_node(uint64_t mem_handle, struct sg_table *sgt, uint32_t size);
-void mitee_dynamic_mem_remove_node(uint64_t mem_handle);
-struct mem_desc *mitee_dynamic_mem_find_node(uint64_t mem_handle);
+struct mem_desc *mitee_dynamic_mem_take_node(uint64_t mem_handle);
+struct mem_desc *mitee_dynamic_mem_take_first(void);
+void mitee_dynamic_mem_restore_node(struct mem_desc *desc);
 
 /* mem_size: [in] target memory size going to free
  * sgt: target memory assigned in sg_table to free

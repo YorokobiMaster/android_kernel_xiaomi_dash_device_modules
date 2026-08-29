@@ -18,6 +18,7 @@
 #include <linux/of.h>
 #include <linux/cpumask.h>
 #include <linux/proc_fs.h>
+#include <linux/reboot.h>
 
 #include <tee_drv.h>
 #include "optee_ffa.h"
@@ -425,8 +426,15 @@ static int optee_ffa_shm_register(struct tee_context *ctx,
 
 	rc = optee_shm_add_ffa_handle(optee, shm, args.g_handle);
 	if (rc) {
+		int reclaim_rc;
+
 		pr_err("%s add handle failed: %d!\n", __func__, rc);
-		mem_ops->memory_reclaim(args.g_handle, 0);
+		reclaim_rc = mem_ops->memory_reclaim(args.g_handle, 0);
+		if (reclaim_rc) {
+			pr_crit("retaining SHM pages for untracked FF-A handle 0x%llx: %d\n",
+				args.g_handle, reclaim_rc);
+			return -EOWNERDEAD;
+		}
 		return rc;
 	}
 
@@ -446,7 +454,8 @@ static int optee_ffa_shm_unregister(struct tee_context *ctx,
 	const struct ffa_mem_ops *mem_ops = ffa_dev->ops->mem_ops;
 	u64 global_handle = shm->sec_world_id;
 	struct optee_msg_arg *msg_arg;
-	int rc;
+	int call_rc;
+	int reclaim_rc;
 
 	msg_arg = kzalloc(OPTEE_MSG_GET_ARG_SIZE(1), GFP_KERNEL);
 	if (!msg_arg)
@@ -457,22 +466,31 @@ static int optee_ffa_shm_unregister(struct tee_context *ctx,
 	msg_arg->params[0].attr = OPTEE_MSG_ATTR_TYPE_FMEM_INPUT;
 	msg_arg->params[0].u.fmem.global_id = global_handle;
 
+	call_rc = optee->ops->do_call_with_arg(ctx, msg_arg);
+	if (call_rc) {
+		pr_err("%s: Unregister SHM id 0x%llx rc %d\n", __func__,
+		       global_handle, call_rc);
+	} else if (msg_arg->ret != TEEC_SUCCESS) {
+		pr_warn_ratelimited("%s: secure unregister SHM id 0x%llx ret %#x\n",
+				    __func__, global_handle, msg_arg->ret);
+	}
+
+	/*
+	 * The yielding-call result describes MiTEE's SHM bookkeeping, not FF-A
+	 * ownership.  Reclaim is the authoritative ownership transition and must
+	 * run even when the secure unregister command failed or was redundant.
+	 */
+	reclaim_rc = mem_ops->memory_reclaim(global_handle, 0);
+	if (reclaim_rc)
+		pr_err("%s: mem_reclain: 0x%llx %d", __func__,
+		       global_handle, reclaim_rc);
+
+	/* The tee_shm object is being destroyed; never retain its map entry. */
 	optee_shm_rem_ffa_handle(optee, global_handle);
 	shm->sec_world_id = 0;
-
-	rc = optee->ops->do_call_with_arg(ctx, msg_arg);
-	if (rc)
-		pr_err("%s: Unregister SHM id 0x%llx rc %d\n", __func__,
-		       global_handle, rc);
-
-	rc = mem_ops->memory_reclaim(global_handle, 0);
-	if (rc)
-		pr_err("%s: mem_reclain: 0x%llx %d", __func__,
-		       global_handle, rc);
-
 	kfree(msg_arg);
 
-	return rc;
+	return reclaim_rc;
 }
 
 static int optee_ffa_shm_unregister_supp(struct tee_context *ctx,
@@ -489,13 +507,14 @@ static int optee_ffa_shm_unregister_supp(struct tee_context *ctx,
 	 * this ID.
 	 */
 
-	optee_shm_rem_ffa_handle(optee, global_handle);
 	mem_ops = mitee_ffa_ctx.ffa_dev->ops->mem_ops;
 	rc = mem_ops->memory_reclaim(global_handle, 0);
 	if (rc)
 		pr_err("%s: mem_reclain: 0x%llx %d", __func__,
 		       global_handle, rc);
 
+	/* The tee_shm object is being destroyed; never retain its map entry. */
+	optee_shm_rem_ffa_handle(optee, global_handle);
 	shm->sec_world_id = 0;
 
 	return rc;
@@ -518,7 +537,14 @@ static int pool_ffa_op_alloc(struct tee_shm_pool_mgr *poolm,
 static void pool_ffa_op_free(struct tee_shm_pool_mgr *poolm,
 			     struct tee_shm *shm)
 {
-	optee_ffa_shm_unregister(shm->ctx, shm);
+	int rc = optee_ffa_shm_unregister(shm->ctx, shm);
+
+	if (rc) {
+		pr_crit("leaking SHM pages after FF-A reclaim failure: %d\n",
+			rc);
+		shm->kaddr = NULL;
+		return;
+	}
 	free_pages((unsigned long)shm->kaddr, get_order(shm->size));
 	shm->kaddr = NULL;
 }
@@ -922,7 +948,7 @@ int mitee_dynamic_mem_free_ffa(uint64_t mem_handle)
 	struct ffa_device *ffa_dev = mitee_ffa_ctx.ffa_dev;
 	const struct ffa_mem_ops *mem_ops = ffa_dev->ops->mem_ops;
 
-	desc = mitee_dynamic_mem_find_node(mem_handle);
+	desc = mitee_dynamic_mem_take_node(mem_handle);
 	if (!desc) {
 		 pr_err("mitee: free memory with handle(0x%llx) failed\n", mem_handle);
 		 return -EINVAL;
@@ -930,9 +956,14 @@ int mitee_dynamic_mem_free_ffa(uint64_t mem_handle)
 
 	sgt = desc->sgt;
 	mem_size = desc->mem_size;
-	mem_ops->memory_reclaim(mem_handle, 0);
+	if (mem_ops->memory_reclaim(mem_handle, 0)) {
+		pr_err("mitee: failed to reclaim dynamic memory 0x%llx\n",
+		       mem_handle);
+		mitee_dynamic_mem_restore_node(desc);
+		return -EBUSY;
+	}
 	mitee_free_memory_sgt(mem_size, sgt);
-	mitee_dynamic_mem_remove_node(mem_handle);
+	kfree(desc);
 	return 0;
 }
 
@@ -940,7 +971,7 @@ int mitee_dynamic_mem_allocate_ffa(uint32_t mem_size, uint64_t *mem_handle,
 				   void *buf, uint32_t size_in,
 				   uint32_t *size_out)
 {
-	uint32_t size_aligned = (roundup(mem_size, PAGE_SIZE));
+	u32 size_aligned;
 	struct sg_table *sgt = NULL;
 	int rc;
 	struct ffa_device *ffa_dev = mitee_ffa_ctx.ffa_dev;
@@ -954,6 +985,10 @@ int mitee_dynamic_mem_allocate_ffa(uint32_t mem_size, uint64_t *mem_handle,
 		.attrs = &mem_attr,
 		.nattrs = 1,
 	};
+
+	if (!mem_size || mem_size > U32_MAX - (PAGE_SIZE - 1))
+		return -EINVAL;
+	size_aligned = roundup(mem_size, PAGE_SIZE);
 
 	rc = mitee_alloc_memory_sgt(size_aligned, &sgt);
 	if (rc) {
@@ -977,7 +1012,11 @@ int mitee_dynamic_mem_allocate_ffa(uint32_t mem_size, uint64_t *mem_handle,
 	*mem_handle = args.g_handle;
 	return 0;
 err_out1:
-	mem_ops->memory_reclaim(args.g_handle, 0);
+	if (mem_ops->memory_reclaim(args.g_handle, 0)) {
+		pr_crit("leaking dynamic memory after FF-A reclaim failure: 0x%llx\n",
+			args.g_handle);
+		return rc;
+	}
 err_out2:
 	mitee_free_memory_sgt(size_aligned, sgt);
 	return rc;
@@ -1018,7 +1057,8 @@ uint32_t mitee_rpc_callback(struct optee_msg_param_value *value, void *buf,
 		}
 
 		mem_handle = value->c;
-		mitee_dynamic_mem_free_ffa(mem_handle);
+		if (mitee_dynamic_mem_free_ffa(mem_handle))
+			return TEEC_ERROR_COMMUNICATION;
 		break;
 	//only for test OPTEE_REE_CALLBACK_CALL
 	default:
@@ -1032,13 +1072,65 @@ bad:
 	return TEEC_ERROR_BAD_PARAMETERS;
 }
 
+static void mitee_dynamic_mem_reclaim_all(void)
+{
+	struct ffa_device *ffa_dev = READ_ONCE(mitee_ffa_ctx.ffa_dev);
+	const struct ffa_mem_ops *mem_ops;
+	struct mem_desc *desc;
+
+	if (!ffa_dev || !ffa_dev->ops || !ffa_dev->ops->mem_ops)
+		return;
+	mem_ops = ffa_dev->ops->mem_ops;
+	while ((desc = mitee_dynamic_mem_take_first())) {
+		if (mem_ops->memory_reclaim(desc->global_id, 0)) {
+			pr_crit("retaining dynamic memory 0x%llx after reclaim failure\n",
+				desc->global_id);
+			mitee_dynamic_mem_restore_node(desc);
+			break;
+		}
+		mitee_free_memory_sgt(desc->mem_size, desc->sgt);
+		kfree(desc);
+	}
+}
+
+static int mitee_reboot_notify(struct notifier_block *nb,
+			       unsigned long event, void *unused)
+{
+	struct optee *optee = container_of(nb, struct optee, reboot_notifier);
+	long drained;
+
+	WRITE_ONCE(optee->shutting_down, true);
+	wake_up_all(&optee->concurrency_wq);
+	wake_up_all(&optee->supp_ctx_wq);
+	drained = wait_event_timeout(optee->concurrency_wq,
+				     !READ_ONCE(optee->active_calls),
+				     msecs_to_jiffies(5000));
+	if (!drained)
+		pr_err("reboot quiesce timed out with %u active calls\n",
+		       READ_ONCE(optee->active_calls));
+	else
+		mitee_dynamic_mem_reclaim_all();
+	if (drained)
+		pr_info("reboot quiesce complete\n");
+
+	return NOTIFY_DONE;
+}
+
 static int __init mitee_core_init(void)
 {
-	char worker_name[20] = { 0 };
 	unsigned int rpc_arg_count = 0;
 	struct tee_device *teedev = NULL;
 	struct optee *optee = NULL;
 	void *memremaped_shm = NULL;
+	bool client_registered = false;
+	bool supp_registered = false;
+	bool ffa_registered = false;
+	bool memlog_added = false;
+	bool memlog_ready = false;
+	bool queue_ready = false;
+	bool tasks_ready = false;
+	bool proc_ready = false;
+	bool workers_ready = false;
 	u32 sec_caps = 0;
 	int rc = 0;
 	sec_caps |= OPTEE_SMC_SEC_CAP_HAVE_RESERVED_SHM;
@@ -1064,24 +1156,41 @@ static int __init mitee_core_init(void)
 	}
 
 	optee->comm_ops = &mitee_ffa_comm_ops;
+	mutex_init(&optee->call_queue.mutex);
+	INIT_LIST_HEAD(&optee->call_queue.waiters);
+	optee_wait_queue_init(&optee->wait_queue);
+	mitee_rpc_callback_queue_init(&optee->cb_queue);
+	optee_supp_init(&optee->supp);
+	mutex_init(&optee->concurrency_lock);
+	init_waitqueue_head(&optee->concurrency_wq);
+	init_waitqueue_head(&optee->supp_ctx_wq);
+	optee->concurrency_limit = MITEE_WORKER_COUNT;
+	optee->active_calls = 0;
+	optee->shutting_down = false;
+	ATOMIC_INIT_NOTIFIER_HEAD(&optee->notifier);
+	mitee_dynamic_mem_init();
+
 	rc = optee->comm_ops->register_abi();
 	if (rc) {
 		pr_err("failed to register FF-A transport: %d\n", rc);
-		goto err_free_optee;
+		goto err_shutdown;
 	}
+	ffa_registered = true;
 
 #if MITEE_FEATURE_CAP_ENABLE
 	if (!optee_ffa_api_is_compatbile(mitee_ffa_ctx.ffa_dev,
 					 mitee_ffa_ctx.ffa_ops)) {
 		pr_err("ffa abi unmatch\n");
-		goto err_unregister_ffa;
+		rc = -EINVAL;
+		goto err_shutdown;
 	}
 
 	if (!optee_ffa_exchange_caps(mitee_ffa_ctx.ffa_dev,
 				     mitee_ffa_ctx.ffa_ops,
 				     &rpc_arg_count)) {
 		pr_err("ffa exchange caps fail\n");
-		goto err_unregister_ffa;
+		rc = -EINVAL;
+		goto err_shutdown;
 	}
 #endif
 
@@ -1100,7 +1209,7 @@ static int __init mitee_core_init(void)
 	if (IS_ERR(optee->pool)) {
 		rc = PTR_ERR(optee->pool);
 		optee->pool = NULL;
-		goto err_unregister_ffa;
+		goto err_shutdown;
 	}
 
 	optee->ops = &optee_param_ops;
@@ -1110,7 +1219,8 @@ static int __init mitee_core_init(void)
 				  optee);
 	if (IS_ERR(teedev)) {
 		rc = PTR_ERR(teedev);
-		goto err_free_pool;
+		optee->teedev = NULL;
+		goto err_shutdown;
 	}
 	optee->teedev = teedev;
 
@@ -1118,146 +1228,149 @@ static int __init mitee_core_init(void)
 				  optee);
 	if (IS_ERR(teedev)) {
 		rc = PTR_ERR(teedev);
-		goto err_unreg_teedev;
+		optee->supp_teedev = NULL;
+		goto err_shutdown;
 	}
 	optee->supp_teedev = teedev;
 
-	rc = tee_device_register(optee->teedev);
-	if (rc)
-		goto err_unreg_supp_teedev;
-
-	rc = tee_device_register(optee->supp_teedev);
-	if (rc)
-		goto err_unreg_supp_teedev;
-
-	mutex_init(&optee->call_queue.mutex);
-	INIT_LIST_HEAD(&optee->call_queue.waiters);
-	optee_wait_queue_init(&optee->wait_queue);
-	mitee_rpc_callback_queue_init(&optee->cb_queue);
-	optee_supp_init(&optee->supp);
 	optee->memremaped_shm = memremaped_shm;
-
-#if MITEE_FEATURE_FW_NP_ENABLE
-	rc = optee_enumerate_devices(PTA_CMD_GET_DEVICES);
-	if (rc) {
-		goto err_rhashtable_free;
-	}
-#endif
 	optee_svc = optee;
 
-	mitee_dynamic_mem_init();
 	//rpc callback should register after optee_svc was initialized
 	mitee_rpc_register_callback(REE_CALLBACK_MODULE_TEE_FRAMEWORK,
 				    OPTEE_REE_CALLBACK_ALLOCATE_NONSECMEM, mitee_rpc_callback);
 	mitee_rpc_register_callback(REE_CALLBACK_MODULE_TEE_FRAMEWORK,
 				    OPTEE_REE_CALLBACK_FREE_NONSECMEM, mitee_rpc_callback);
 	/* mitee log device function START */
-	ATOMIC_INIT_NOTIFIER_HEAD(&optee->notifier);
 	optee->mitee_memlog_pdev = platform_device_alloc("mitee_memlog", 0);
 	if (!optee->mitee_memlog_pdev) {
 		rc = -ENOMEM;
-		goto err_deinit_services;
+		goto err_shutdown;
 	}
 
-	platform_device_add(optee->mitee_memlog_pdev);
+	rc = platform_device_add(optee->mitee_memlog_pdev);
+	if (rc) {
+		pr_err("failed to add mitee_memlog device (%d)\n", rc);
+		goto err_shutdown;
+	}
+	memlog_added = true;
 
-	rc = mitee_memlog_probe(optee->mitee_memlog_pdev);
+	rc = mitee_memlog_probe(optee->mitee_memlog_pdev, optee);
 	if (rc) {
 		pr_err("failed to initial mitee_memlog driver (%d)\n", rc);
-		goto err_del_memlog_pdev;
+		goto err_shutdown;
 	}
+	memlog_ready = true;
 	/* mitee log device function END */
-
-	sema_init(&optee->concurrency, MITEE_WORKER_COUNT);
 
 	rc = mitee_msg_queue_init(&optee->msg_queue);
 	if (rc) {
 		pr_err("failed to init mitee message queue (%d)\n", rc);
-		goto err_remove_memlog;
+		goto err_shutdown;
 	}
+	queue_ready = true;
 
-	rc = mitee_msg_queue_register();
+	rc = mitee_msg_queue_register(optee);
 	if (rc) {
 		pr_err("failed to register mitee message queue (%d)\n", rc);
-		goto err_deinit_msg_queue;
+		goto err_shutdown;
 	}
 
 	mitee_task_list_init(&optee->tasks);
-	rc = mitee_proc_init();
+	tasks_ready = true;
+	rc = mitee_proc_init(optee);
 	if (rc) {
 		pr_err("failed to create mitee concurrency proc node (%d)\n", rc);
-		goto err_deinit_tasks;
+		goto err_shutdown;
 	}
+	proc_ready = true;
 
-	atomic_set(&optee->workers_started, 0);
-	optee->workers[0].id = 0;
-	optee->workers[0].optee = optee;
-	atomic_set(&optee->workers[0].busy, 0);
-	init_completion(&optee->workers[0].work);
-	snprintf(worker_name, 15, "mitee_worker/%d", 0);
-	optee->workers[0].thread = kthread_create(mitee_worker_fn,
-						  &optee->workers[0],
-						  "%s", worker_name);
-	if (IS_ERR(optee->workers[0].thread)) {
-		rc = PTR_ERR(optee->workers[0].thread);
-		pr_err("failed to create mitee worker 0: %d\n", rc);
-		goto err_remove_proc;
+	rc = mitee_workers_init(optee);
+	if (rc) {
+		pr_err("failed to start mitee workers: %d\n", rc);
+		goto err_shutdown;
 	}
+	workers_ready = true;
 
-	optee->workers[1].id = 1;
-	optee->workers[1].optee = optee;
-	atomic_set(&optee->workers[1].busy, 0);
-	init_completion(&optee->workers[1].work);
-	snprintf(worker_name, 15, "mitee_worker/%d", 1);
-	optee->workers[1].thread = kthread_create(mitee_worker_fn,
-						  &optee->workers[1],
-						  "%s", worker_name);
-	if (IS_ERR(optee->workers[1].thread)) {
-		rc = PTR_ERR(optee->workers[1].thread);
-		pr_err("failed to create mitee worker 1: %d\n", rc);
-		goto err_remove_proc;
-	}
-	wake_up_process(optee->workers[0].thread);
-	wake_up_process(optee->workers[1].thread);
+	rc = tee_device_register(optee->teedev);
+	if (rc)
+		goto err_shutdown;
+	client_registered = true;
+	rc = tee_device_register(optee->supp_teedev);
+	if (rc)
+		goto err_shutdown;
+	supp_registered = true;
+
+	#if MITEE_FEATURE_FW_NP_ENABLE
+	rc = optee_enumerate_devices(PTA_CMD_GET_DEVICES);
+	if (rc)
+		goto err_shutdown;
+	#endif
 
 	optee_bm_enable();
+	optee->reboot_notifier.notifier_call = mitee_reboot_notify;
+	optee->reboot_notifier.priority = 200;
+	rc = register_reboot_notifier(&optee->reboot_notifier);
+	if (rc) {
+		pr_err("failed to register reboot notifier: %d\n", rc);
+		optee_bm_disable();
+		goto err_shutdown;
+	}
+	optee->reboot_notifier_registered = true;
 
 	pr_info("initialized driver\n");
 	return 0;
 
-err_remove_proc:
-	remove_proc_entry("mitee_concurrency", NULL);
-err_deinit_tasks:
-	mitee_task_list_deinit(&optee->tasks);
-err_deinit_msg_queue:
-	mitee_msg_queue_deinit(&optee->msg_queue);
-err_remove_memlog:
-	(void)mitee_memlog_remove(optee->mitee_memlog_pdev);
-err_del_memlog_pdev:
-	platform_device_del(optee->mitee_memlog_pdev);
-err_deinit_services:
-#if MITEE_FEATURE_FW_NP_ENABLE
+err_shutdown:
+	if (optee->reboot_notifier_registered) {
+		unregister_reboot_notifier(&optee->reboot_notifier);
+		optee->reboot_notifier_registered = false;
+	}
+	#if MITEE_FEATURE_FW_NP_ENABLE
 	optee_unregister_devices();
-err_rhashtable_free:
-#endif
+	#endif
+	if (client_registered)
+		tee_device_unregister(optee->teedev);
+	if (supp_registered)
+		tee_device_unregister(optee->supp_teedev);
+	WRITE_ONCE(optee->shutting_down, true);
+	wake_up_all(&optee->concurrency_wq);
+	wake_up_all(&optee->supp_ctx_wq);
+	if (workers_ready)
+		mitee_workers_deinit(optee);
+	if (proc_ready)
+		mitee_proc_deinit(optee);
+	if (tasks_ready)
+		mitee_task_list_deinit(&optee->tasks);
+	if (queue_ready)
+		mitee_msg_queue_deinit(&optee->msg_queue);
+	if (memlog_ready)
+		mitee_memlog_remove(optee->mitee_memlog_pdev);
+	if (memlog_added) {
+		platform_device_unregister(optee->mitee_memlog_pdev);
+		optee->mitee_memlog_pdev = NULL;
+	} else if (optee->mitee_memlog_pdev) {
+		platform_device_put(optee->mitee_memlog_pdev);
+		optee->mitee_memlog_pdev = NULL;
+	}
+	optee_svc = NULL;
+	mitee_rpc_callback_queue_deinit(&optee->cb_queue);
+	mitee_dynamic_mem_reclaim_all();
+	mitee_dynamic_mem_deinit();
+	optee_supp_release(&optee->supp);
 	optee_supp_uninit(&optee->supp);
-
-err_unreg_supp_teedev:
-	/*
-	 * tee_device_unregister() is safe to call even if the
-	 * devices hasn't been registered with
-	 * tee_device_register() yet.
-	 */
-	tee_device_unregister(optee->supp_teedev);
-err_unreg_teedev:
-	tee_device_unregister(optee->teedev);
-err_free_pool:
+	optee_wait_queue_exit(&optee->wait_queue);
+	mutex_destroy(&optee->call_queue.mutex);
+	if (optee->supp_teedev && !supp_registered)
+		tee_device_unregister(optee->supp_teedev);
+	if (optee->teedev && !client_registered)
+		tee_device_unregister(optee->teedev);
 	if (optee->pool)
 		tee_shm_pool_free(optee->pool);
 	if (memremaped_shm)
 		memunmap(memremaped_shm);
-err_unregister_ffa:
-	optee->comm_ops->unregister_abi();
+	if (ffa_registered)
+		optee->comm_ops->unregister_abi();
 err_free_optee:
 	kfree(optee);
 err_tee_exit:
@@ -1270,35 +1383,44 @@ static int mitee_ffa_probe(struct ffa_device *ffa_dev)
 	const struct ffa_ops *ffa_ops = ffa_dev->ops;
 	int rc;
 
-	if (IS_ERR_OR_NULL(ffa_ops)) {
-		rc = PTR_ERR(ffa_ops);
+	if (IS_ERR_OR_NULL(ffa_ops) || !ffa_ops->msg_ops ||
+	    !ffa_ops->mem_ops) {
+		rc = IS_ERR(ffa_ops) ? PTR_ERR(ffa_ops) : -EINVAL;
 		pr_err("invalid FF-A ops: %d\n", rc);
 		return rc;
 	}
 
+	mutex_init(&mitee_ffa_ctx.mutex);
+	rc = rhashtable_init(&mitee_ffa_ctx.global_ids, &shm_rhash_params);
+	if (rc) {
+		pr_err("failed to initialize FF-A handle table: %d\n", rc);
+		return rc;
+	}
 	mitee_ffa_ctx.ffa_dev = ffa_dev;
 	mitee_ffa_ctx.ffa_ops = ffa_ops;
-	mutex_init(&mitee_ffa_ctx.mutex);
 	mitee_smc_notify_init(ffa_dev);
-	rc = rhashtable_init(&mitee_ffa_ctx.global_ids, &shm_rhash_params);
-	if (rc)
-		pr_err("failed to initialize FF-A handle table: %d\n", rc);
-	return rc;
+	return 0;
 }
 
 static void mitee_ffa_remove(struct ffa_device *ffa_dev)
 {
 	rhashtable_free_and_destroy(&mitee_ffa_ctx.global_ids,
 				    rh_free_fn, NULL);
+	mitee_smc_notify_deinit();
+	mitee_ffa_ctx.ffa_dev = NULL;
+	mitee_ffa_ctx.ffa_ops = NULL;
 }
 
 int mitee_ffa_call(struct ffa_send_direct_data *data)
 {
 	struct ffa_send_direct_data local = *data;
+	const struct ffa_ops *ops = READ_ONCE(mitee_ffa_ctx.ffa_ops);
+	struct ffa_device *ffa_dev = READ_ONCE(mitee_ffa_ctx.ffa_dev);
 	int rc;
 
-	rc = mitee_ffa_ctx.ffa_ops->msg_ops->sync_send_receive(
-		mitee_ffa_ctx.ffa_dev, &local);
+	if (!ops || !ops->msg_ops || !ffa_dev)
+		return -ENODEV;
+	rc = ops->msg_ops->sync_send_receive(ffa_dev, &local);
 	if (rc) {
 		pr_err("Unexpected error %d\n", rc);
 		return rc;
@@ -1324,10 +1446,18 @@ static struct ffa_driver mitee_ffa_driver = {
 
 int mitee_ffa_register(void)
 {
-	if (IS_REACHABLE(CONFIG_ARM_FFA_TRANSPORT))
-		return ffa_register(&mitee_ffa_driver);
-	else
+	int rc;
+
+	if (!IS_REACHABLE(CONFIG_ARM_FFA_TRANSPORT))
 		return -EOPNOTSUPP;
+	rc = ffa_register(&mitee_ffa_driver);
+	if (rc)
+		return rc;
+	if (!READ_ONCE(mitee_ffa_ctx.ffa_dev)) {
+		ffa_unregister(&mitee_ffa_driver);
+		return -ENODEV;
+	}
+	return 0;
 }
 
 void mitee_ffa_unregister(void)
@@ -1352,19 +1482,43 @@ static void __exit mitee_core_exit(void)
 {
 	struct optee *optee = optee_svc;
 
-	tee_device_unregister(optee->supp_teedev);
+	if (!optee)
+		return;
+	if (optee->reboot_notifier_registered) {
+		unregister_reboot_notifier(&optee->reboot_notifier);
+		optee->reboot_notifier_registered = false;
+	}
+
+	mitee_proc_deinit(optee);
+	#if MITEE_FEATURE_FW_NP_ENABLE
+	optee_unregister_devices();
+	#endif
 	tee_device_unregister(optee->teedev);
-	tee_shm_pool_free(optee->pool);
-	optee_wait_queue_exit(&optee->wait_queue);
-	optee_supp_uninit(&optee->supp);
-	optee->comm_ops->unregister_abi();
-	mitee_rpc_callback_queue_deinit(&optee->cb_queue);
-	mitee_dynamic_mem_deinit();
-	mitee_msg_queue_deinit(&optee->msg_queue);
+	tee_device_unregister(optee->supp_teedev);
+	WRITE_ONCE(optee->shutting_down, true);
+	wake_up_all(&optee->concurrency_wq);
+	wake_up_all(&optee->supp_ctx_wq);
+	mitee_workers_deinit(optee);
 	mitee_task_list_deinit(&optee->tasks);
-	kthread_stop(optee->workers[0].thread);
-	kthread_stop(optee->workers[1].thread);
+	mitee_msg_queue_deinit(&optee->msg_queue);
+	mitee_memlog_remove(optee->mitee_memlog_pdev);
+	platform_device_unregister(optee->mitee_memlog_pdev);
+	optee->mitee_memlog_pdev = NULL;
+	optee_bm_disable();
+	mitee_rpc_callback_queue_deinit(&optee->cb_queue);
+	mitee_dynamic_mem_reclaim_all();
+	mitee_dynamic_mem_deinit();
+	optee_supp_release(&optee->supp);
+	optee_supp_uninit(&optee->supp);
+	optee_wait_queue_exit(&optee->wait_queue);
+	mutex_destroy(&optee->call_queue.mutex);
+	tee_shm_pool_free(optee->pool);
+	if (optee->memremaped_shm)
+		memunmap(optee->memremaped_shm);
+	optee_svc = NULL;
+	optee->comm_ops->unregister_abi();
 	kfree(optee);
+	mitee_tee_exit();
 }
 
 module_init(mitee_core_init);

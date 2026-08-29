@@ -37,6 +37,7 @@ void optee_supp_init(struct optee_supp *supp)
 	memset(supp, 0, sizeof(*supp));
 	mutex_init(&supp->mutex);
 	init_completion(&supp->reqs_c);
+	init_waitqueue_head(&supp->refs_wq);
 	idr_init(&supp->idr);
 	INIT_LIST_HEAD(&supp->reqs);
 	supp->req_id = -1;
@@ -75,6 +76,31 @@ void optee_supp_release(struct optee_supp *supp)
 	supp->req_id = -1;
 
 	mutex_unlock(&supp->mutex);
+	wait_event(supp->refs_wq, !READ_ONCE(supp->refs));
+}
+
+struct tee_context *optee_supp_get_ctx(struct optee_supp *supp)
+{
+	struct tee_context *ctx;
+
+	mutex_lock(&supp->mutex);
+	ctx = supp->ctx;
+	if (ctx)
+		supp->refs++;
+	mutex_unlock(&supp->mutex);
+	return ctx;
+}
+
+void optee_supp_put_ctx(struct optee_supp *supp)
+{
+	mutex_lock(&supp->mutex);
+	if (WARN_ON(!supp->refs)) {
+		mutex_unlock(&supp->mutex);
+		return;
+	}
+	supp->refs--;
+	mutex_unlock(&supp->mutex);
+	wake_up_all(&supp->refs_wq);
 }
 
 /**

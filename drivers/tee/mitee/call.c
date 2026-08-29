@@ -134,14 +134,18 @@ static int auth_ca_name(void)
 	int index = 0;
 
 	memset(tpath, 0, sizeof(tpath));
-	ca_path = d_path(&(current->active_mm->exe_file->f_path), tpath, 512);
+	if (!current->mm || !current->mm->exe_file)
+		return -EACCES;
+	ca_path = d_path(&current->mm->exe_file->f_path, tpath, sizeof(tpath));
+	if (IS_ERR(ca_path))
+		return PTR_ERR(ca_path);
 
 	if (DEBUG_CALL)
 		pr_err("pid dentry:%s\n", ca_path);
 
 	for (; index < ARRAY_SIZE(white_list); index++) {
-		int capath_len = strlen(ca_path);
-		int wpath_len = strlen(white_list[index]);
+		size_t capath_len = strlen(ca_path);
+		size_t wpath_len = strlen(white_list[index]);
 		/* check if the path is the same or the sub dir*/
 		if (((capath_len == wpath_len) || (capath_len > wpath_len && ca_path[wpath_len] == '/'))
 		    && !strncmp(ca_path, white_list[index], wpath_len))

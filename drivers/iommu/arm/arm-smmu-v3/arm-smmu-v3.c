@@ -19,6 +19,7 @@
 #include <linux/io-pgtable.h>
 #include <linux/module.h>
 #include <linux/msi.h>
+#include <linux/of_platform.h>
 #include <linux/pci-ats.h>
 #include <linux/platform_device.h>
 
@@ -3314,6 +3315,56 @@ static void arm_smmu_rmr_install_bypass_ste(struct arm_smmu_device *smmu)
 	iort_put_rmr_sids(dev_fwnode(smmu->dev), &rmr_list);
 }
 
+static int arm_smmu_link_apusys_power(struct device *dev)
+{
+	struct device_node *power_np;
+	struct platform_device *power_pdev;
+	struct device_link *link;
+	bool ready;
+
+	if (!of_device_is_compatible(dev->of_node,
+				     "mediatek,mt6991-apu-smmu"))
+		return 0;
+
+	power_np = of_find_compatible_node(NULL, NULL, "mt6991,apu_top_3");
+	if (!power_np)
+		return dev_err_probe(dev, -EPROBE_DEFER,
+				     "waiting for APU-top node\n");
+
+	if (!of_device_is_available(power_np)) {
+		of_node_put(power_np);
+		return dev_err_probe(dev, -ENODEV,
+				     "APU-top supplier is disabled\n");
+	}
+
+	power_pdev = of_find_device_by_node(power_np);
+	of_node_put(power_np);
+	if (!power_pdev)
+		return dev_err_probe(dev, -EPROBE_DEFER,
+				     "waiting for APU-top device\n");
+
+	link = device_link_add(dev, &power_pdev->dev,
+			       DL_FLAG_AUTOPROBE_CONSUMER);
+	if (!link) {
+		put_device(&power_pdev->dev);
+		return dev_err_probe(dev, -EINVAL,
+				     "failed to link APU-top supplier\n");
+	}
+
+	device_lock(&power_pdev->dev);
+	ready = power_pdev->dev.links.status == DL_DEV_DRIVER_BOUND;
+	device_unlock(&power_pdev->dev);
+	put_device(&power_pdev->dev);
+
+	if (!ready) {
+		dev_info(dev, "waiting for APU-top readiness\n");
+		return -EPROBE_DEFER;
+	}
+
+	dev_info(dev, "APU-top supplier ready\n");
+	return 0;
+}
+
 static int arm_smmu_device_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -3323,6 +3374,10 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	bool delay_hw_init;
 	bool bypass;
+
+	ret = arm_smmu_link_apusys_power(dev);
+	if (ret)
+		return ret;
 
 	smmu = devm_kzalloc(dev, sizeof(*smmu), GFP_KERNEL);
 	if (!smmu)

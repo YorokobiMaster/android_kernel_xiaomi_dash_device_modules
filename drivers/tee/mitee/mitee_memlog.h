@@ -20,6 +20,9 @@
 #include <linux/notifier.h>
 #include <linux/arm_ffa.h>
 #include <linux/platform_device.h>
+#include <linux/mutex.h>
+
+struct optee;
 
 #define MITEE_MEMLOG_SIZE (PAGE_SIZE * 64)
 #define MITEE_LINE_BUFFER_SIZE 256
@@ -55,8 +58,13 @@ struct mitee_memlog_state {
 	 */
 	spinlock_t lock;
 	struct log_rb *log;
+	size_t mapped_size;
 	uint32_t get;
 	uint32_t b_get;
+	bool reading_boot_log;
+	/* Serializes proc readers and their consumer cursors. */
+	struct mutex read_lock;
+	struct optee *optee;
 
 	struct page *log_pages;
 
@@ -69,6 +77,6 @@ struct mitee_memlog_state {
 	char line_buffer[MITEE_LINE_BUFFER_SIZE];
 };
 
-int mitee_memlog_probe(struct platform_device *pdev);
+int mitee_memlog_probe(struct platform_device *pdev, struct optee *optee);
 int mitee_memlog_remove(struct platform_device *pdev);
 #endif

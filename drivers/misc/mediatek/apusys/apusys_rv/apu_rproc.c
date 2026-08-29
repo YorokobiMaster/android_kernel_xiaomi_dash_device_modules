@@ -20,6 +20,7 @@
 #include <linux/sched/clock.h>
 #include <linux/of_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/reboot.h>
 
 #include <mt-plat/aee.h>
 
@@ -36,6 +37,10 @@
 
 struct mtk_apu *g_apu_struct;
 uint32_t g_apu_log;
+
+static void apu_shutdown_contract(struct mtk_apu *apu);
+static int apu_reboot_notify(struct notifier_block *nb,
+			     unsigned long event, void *unused);
 
 static void *apu_da_to_va(struct rproc *rproc, u64 da, size_t len, bool *is_iomem)
 {
@@ -509,6 +514,14 @@ static int apu_probe(struct platform_device *pdev)
 			goto remove_apu_excep;
 	}
 
+	apu->reboot_notifier.notifier_call = apu_reboot_notify;
+	apu->reboot_notifier.priority = 100;
+	ret = devm_register_reboot_notifier(dev, &apu->reboot_notifier);
+	if (ret) {
+		dev_err(dev, "failed to register reboot notifier: %d\n", ret);
+		goto remove_apu_excep;
+	}
+
 	ret = rproc_add(rproc);
 	if (ret < 0) {
 		dev_info(dev, "boot fail ret:%d\n", ret);
@@ -615,6 +628,40 @@ static int apu_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void apu_shutdown_contract(struct mtk_apu *apu)
+{
+	struct mtk_apu_hw_ops *hw_ops;
+
+	if (!apu || READ_ONCE(apu->shutdown_complete))
+		return;
+	dev_info(apu->dev, "reboot quiesce begin\n");
+	hw_ops = &apu->platdata->ops;
+	WRITE_ONCE(apu->shutting_down, true);
+	mutex_lock(&apu->send_lock);
+	mutex_unlock(&apu->send_lock);
+	if (hw_ops->shutdown)
+		hw_ops->shutdown(apu);
+	else if (hw_ops->stop)
+		hw_ops->stop(apu);
+	WRITE_ONCE(apu->shutdown_complete, true);
+	dev_info(apu->dev, "reboot quiesce complete\n");
+}
+
+static int apu_reboot_notify(struct notifier_block *nb,
+			     unsigned long event, void *unused)
+{
+	struct mtk_apu *apu = container_of(nb, struct mtk_apu,
+					   reboot_notifier);
+
+	apu_shutdown_contract(apu);
+	return NOTIFY_DONE;
+}
+
+static void apu_shutdown(struct platform_device *pdev)
+{
+	apu_shutdown_contract(platform_get_drvdata(pdev));
+}
+
 #ifndef MT6878_APUSYS_RV_PLAT_DATA
 const struct mtk_apu_platdata mt6878_platdata;
 #endif
@@ -671,6 +718,7 @@ static const struct of_device_id mtk_apu_of_match[] = {
 static struct platform_driver mtk_apu_driver = {
 	.probe = apu_probe,
 	.remove = apu_remove,
+	.shutdown = apu_shutdown,
 	.driver = {
 		.name = "mtk-apu",
 		.of_match_table = of_match_ptr(mtk_apu_of_match),

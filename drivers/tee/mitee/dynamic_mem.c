@@ -69,44 +69,49 @@ int mitee_dynamic_mem_add_node(uint64_t mem_handle, struct sg_table *sgt, uint32
 	return 0;
 }
 
-void mitee_dynamic_mem_remove_node(uint64_t mem_handle)
+struct mem_desc *mitee_dynamic_mem_take_node(uint64_t mem_handle)
 {
 	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
-	struct mem_desc *desc = NULL;
-	struct mem_desc *tmp = NULL;
+	struct mem_desc *desc;
+	struct mem_desc *found = NULL;
 
 	mutex_lock(&queue->mem_mut);
-	list_for_each_entry_safe(desc, tmp, &queue->mem_node, node) {
+	list_for_each_entry(desc, &queue->mem_node, node) {
 		if (desc->global_id == mem_handle) {
-			list_del(&desc->node);
+			list_del_init(&desc->node);
+			found = desc;
 			break;
 		}
 	}
 	mutex_unlock(&queue->mem_mut);
 
-	if (!desc)
+	if (!found)
 		pr_err("mitee dynamic mem: unknown pagelist 0x%llx\n", mem_handle);
-
-	kfree(desc);
-	return;
+	return found;
 }
 
-struct mem_desc *mitee_dynamic_mem_find_node(uint64_t mem_handle)
+struct mem_desc *mitee_dynamic_mem_take_first(void)
 {
 	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
 	struct mem_desc *desc = NULL;
-	struct mem_desc *tmp = NULL;
 
 	mutex_lock(&queue->mem_mut);
-	list_for_each_entry_safe(desc, tmp, &queue->mem_node, node) {
-		if (desc->global_id == mem_handle)
-			break;
+	if (!list_empty(&queue->mem_node)) {
+		desc = list_first_entry(&queue->mem_node, struct mem_desc, node);
+		list_del_init(&desc->node);
 	}
 	mutex_unlock(&queue->mem_mut);
-
 	return desc;
 }
 
+void mitee_dynamic_mem_restore_node(struct mem_desc *desc)
+{
+	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
+
+	mutex_lock(&queue->mem_mut);
+	list_add_tail(&desc->node, &queue->mem_node);
+	mutex_unlock(&queue->mem_mut);
+}
 
 void mitee_free_memory_sgt(uint32_t mem_size, struct sg_table *sgt) {
 	struct scatterlist *sg = NULL;
@@ -138,6 +143,8 @@ int mitee_alloc_memory_sgt(uint32_t mem_size, struct sg_table **out_sgt)
 	struct sg_table *sgt = NULL;
 	struct scatterlist *sg = NULL;
 	INIT_LIST_HEAD(&page_frag.page_node);
+	if (!mem_size || !IS_ALIGNED(mem_size, PAGE_SIZE) || !out_sgt)
+		return -EINVAL;
 
 	for (index = MAX_ORDER - 1; index >= 0; index--) {
 		while (left_size >= (1 << index) * PAGE_SIZE) {
@@ -216,4 +223,7 @@ void mitee_dynamic_mem_init(void)
 
 void mitee_dynamic_mem_deinit(void)
 {
+	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
+
+	WARN_ON(!list_empty(&queue->mem_node));
 }

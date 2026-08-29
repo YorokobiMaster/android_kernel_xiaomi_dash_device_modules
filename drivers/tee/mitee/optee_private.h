@@ -7,9 +7,10 @@
 #define OPTEE_PRIVATE_H
 
 #include <linux/arm-smccc.h>
+#include <linux/errno.h>
 #include <linux/mm.h>
+#include <linux/notifier.h>
 #include <linux/rhashtable.h>
-#include <linux/semaphore.h>
 #include <linux/slab.h>
 #include <linux/types.h>
 
@@ -94,6 +95,8 @@ struct optee_supp {
 	struct list_head reqs;
 	struct idr idr;
 	struct completion reqs_c;
+	unsigned int refs;
+	wait_queue_head_t refs_wq;
 };
 
 struct optee_smc {
@@ -187,7 +190,16 @@ struct optee {
 	struct cpumask cpus_allowed;
 	struct mitee_msg_queue msg_queue;
 	struct mitee_task_list tasks;
-	struct semaphore concurrency;
+	/* Serializes the live call count and configured concurrency limit. */
+	struct mutex concurrency_lock;
+	wait_queue_head_t concurrency_wq;
+	wait_queue_head_t supp_ctx_wq;
+	unsigned int active_calls;
+	unsigned int concurrency_limit;
+	bool shutting_down;
+	bool reboot_notifier_registered;
+	struct notifier_block reboot_notifier;
+	struct proc_dir_entry *concurrency_proc;
 	atomic_t workers_started;
 	struct mitee_worker workers[MITEE_WORKER_COUNT];
 };
@@ -234,6 +246,8 @@ int optee_supp_write(struct tee_context *ctx, void __user *buf, size_t len);
 void optee_supp_init(struct optee_supp *supp);
 void optee_supp_uninit(struct optee_supp *supp);
 void optee_supp_release(struct optee_supp *supp);
+struct tee_context *optee_supp_get_ctx(struct optee_supp *supp);
+void optee_supp_put_ctx(struct optee_supp *supp);
 
 int optee_supp_recv(struct tee_context *ctx, u32 *func, u32 *num_params,
 		    struct tee_param *param);
@@ -262,11 +276,13 @@ static inline int optee_pool_op_alloc_helper(
 {
 	unsigned int order = get_order(size);
 	struct page *page;
+	struct page *base_page;
 	int rc = 0;
 
 	page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
 	if (!page)
 		return -ENOMEM;
+	base_page = page;
 
 	shm->kaddr = page_address(page);
 	shm->paddr = page_to_phys(page);
@@ -284,19 +300,24 @@ static inline int optee_pool_op_alloc_helper(
 		}
 
 		for (i = 0; i < nr_pages; i++)
-			pages[i] = page++;
+			pages[i] = base_page + i;
 
 		shm->flags |= TEE_SHM_REGISTER;
 		rc = shm_register(shm->ctx, shm, pages, nr_pages,
 				  (unsigned long)shm->kaddr);
 		kfree(pages);
+		if (rc == -EOWNERDEAD) {
+			/* Secure world still owns the pages; retain them. */
+			shm->kaddr = NULL;
+			return rc;
+		}
 		if (rc)
 			goto err;
 	}
 
 	return 0;
 err:
-	__free_pages(page, order);
+	__free_pages(base_page, order);
 	return rc;
 }
 
@@ -366,7 +387,8 @@ int to_msg_param_ffa_mem(struct optee_msg_param *msg_param,
 extern const struct mitee_comm_ops mitee_ffa_comm_ops;
 
 struct optee *get_optee_drv_state(void);
-int mitee_proc_init(void);
+int mitee_proc_init(struct optee *optee);
+void mitee_proc_deinit(struct optee *optee);
 
 enum { MITEE_CALL_PREPARE,
        MITEE_CALL_RETURNED,

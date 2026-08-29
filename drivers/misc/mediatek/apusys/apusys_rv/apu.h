@@ -6,6 +6,7 @@
 #ifndef APU_H
 #define APU_H
 #include <linux/platform_device.h>
+#include <linux/notifier.h>
 #include <linux/spinlock.h>
 
 #include "apu_ipi.h"
@@ -19,6 +20,7 @@ struct mtk_apu_hw_ops {
 	int (*exit)(struct mtk_apu *apu);
 	int (*start)(struct mtk_apu *apu);
 	int (*stop)(struct mtk_apu *apu);
+	void (*shutdown)(struct mtk_apu *apu);
 	int (*apu_memmap_init)(struct mtk_apu *apu);
 	void (*apu_memmap_remove)(struct mtk_apu *apu);
 	void (*cg_gating)(struct mtk_apu *apu);
@@ -211,6 +213,9 @@ struct mtk_apu {
 	bool pwr_on_polling_dbg_mode;
 	bool ce_dbg_polling_dump_mode;
 	bool apusys_rv_trace_on;
+	bool shutting_down;
+	bool shutdown_complete;
+	struct notifier_block reboot_notifier;
 	wait_queue_head_t ack_wq; /* for waiting for ipi ack */
 	struct timespec64 intr_ts_begin;
 	struct timespec64 intr_ts_end;

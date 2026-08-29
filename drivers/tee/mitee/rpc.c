@@ -37,6 +37,15 @@ void optee_wait_queue_init(struct optee_wait_queue *priv)
 
 void optee_wait_queue_exit(struct optee_wait_queue *priv)
 {
+	struct wq_entry *w;
+	struct wq_entry *tmp;
+
+	mutex_lock(&priv->mu);
+	list_for_each_entry_safe(w, tmp, &priv->db, link) {
+		list_del(&w->link);
+		kfree(w);
+	}
+	mutex_unlock(&priv->mu);
 }
 
 void mitee_rpc_callback_queue_init(struct mitee_rpc_callback_queue *queue)
@@ -47,6 +56,15 @@ void mitee_rpc_callback_queue_init(struct mitee_rpc_callback_queue *queue)
 
 void mitee_rpc_callback_queue_deinit(struct mitee_rpc_callback_queue *queue)
 {
+	struct callback_item *item;
+	struct callback_item *tmp;
+
+	mutex_lock(&queue->mut);
+	list_for_each_entry_safe(item, tmp, &queue->item, link) {
+		list_del(&item->link);
+		kfree(item);
+	}
+	mutex_unlock(&queue->mut);
 }
 
 static void handle_rpc_func_cmd_get_time(struct optee_msg_arg *arg)
@@ -399,6 +417,7 @@ void mitee_rpc_register_callback(uint32_t module_id, uint32_t cmd,
 			list_del(&item->link);
 			list_add_tail(&new_item->link, &queue->item);
 			mutex_unlock(&queue->mut);
+			kfree(item);
 			return;
 		}
 	}
@@ -410,7 +429,8 @@ EXPORT_SYMBOL(mitee_rpc_register_callback);
 
 static int optee_msg_arg_to_callback_para(struct optee_msg_arg *arg, struct optee_msg_param_value **value,
 					  void **va, uint32_t *size) {
-	if (value == NULL || arg == NULL || va == NULL || size == NULL) {
+	if (!value || !arg || !va || !size ||
+	    arg->num_params < 3) {
 		return -EINVAL;
 	}
 
@@ -435,7 +455,17 @@ static int optee_msg_arg_to_callback_para(struct optee_msg_arg *arg, struct opte
 			return rc;
 		}
 
-		*va = (char *)tee_shm_get_va(shm, arg->params[2].u.tmem.buf_ptr - pa);
+		if (arg->params[2].u.tmem.buf_ptr < pa ||
+		    arg->params[2].u.tmem.size > U32_MAX)
+			return -EINVAL;
+		*va = tee_shm_get_va(shm,
+				     arg->params[2].u.tmem.buf_ptr - pa);
+		if (IS_ERR(*va))
+			return PTR_ERR(*va);
+		if (arg->params[2].u.tmem.size >
+		    tee_shm_get_size(shm) -
+		    (arg->params[2].u.tmem.buf_ptr - pa))
+			return -EINVAL;
 		*size = (uint32_t)arg->params[2].u.tmem.size;
 	}
 
@@ -451,37 +481,52 @@ static void handle_rpc_cmd_callback(struct optee *optee,
 {
 	struct mitee_rpc_callback_queue *queue = &optee->cb_queue;
 	struct callback_item *item = NULL;
-	uint32_t module_id = (uint32_t)arg->params[0].u.value.b;
-	uint32_t cmd = (uint32_t)arg->params[0].u.value.a;
+	u32 (*callback)(struct optee_msg_param_value *value, void *buf,
+			u32 size_in, u32 *size_out) = NULL;
+	u32 module_id;
+	u32 cmd;
+
+	if (!arg->num_params) {
+		arg->ret = TEEC_ERROR_BAD_PARAMETERS;
+		return;
+	}
+
+	module_id = (uint32_t)arg->params[0].u.value.b;
+	cmd = (uint32_t)arg->params[0].u.value.a;
 
 	mutex_lock(&queue->mut);
 	list_for_each_entry (item, &queue->item, link) {
 		if (item->module_id == module_id && item->cmd == cmd && item->callback != NULL) {
-			if (cmd == OPTEE_REE_CALLBACK_CALL) {
-				void *va = NULL;
-				uint32_t size_in = 0;
-				uint32_t size_out = 0;
-				struct optee_msg_param_value *value = NULL;
-				int rc;
-				rc = optee_msg_arg_to_callback_para(arg, &value, &va, &size_in);
-				if (!rc) {
-					rc = item->callback(value, va, size_in, &size_out);
-					update_optee_msg_arg(arg, size_out);
-					arg->ret = rc;
-				} else {
-					pr_err("mitee callback msg_arg invalid %d\n", rc);
-					arg->ret = TEEC_ERROR_BAD_PARAMETERS;
-				}
-			}
-			else {
-				arg->ret = item->callback(&arg->params[0].u.value, NULL, 0, NULL);
-			}
-
-			mutex_unlock(&queue->mut);
-			return;
+			callback = item->callback;
+			break;
 		}
 	}
 	mutex_unlock(&queue->mut);
+
+	if (callback) {
+		if (cmd == OPTEE_REE_CALLBACK_CALL) {
+			void *va = NULL;
+			u32 size_in = 0;
+			u32 size_out = 0;
+			struct optee_msg_param_value *value = NULL;
+			int rc;
+
+			rc = optee_msg_arg_to_callback_para(arg, &value, &va, &size_in);
+			if (!rc) {
+				rc = callback(value, va, size_in, &size_out);
+				update_optee_msg_arg(arg, size_out);
+				arg->ret = rc;
+			} else {
+				pr_err("mitee callback msg_arg invalid %d\n", rc);
+				arg->ret = TEEC_ERROR_BAD_PARAMETERS;
+			}
+		} else {
+			arg->ret = callback(&arg->params[0].u.value, NULL, 0,
+					    NULL);
+		}
+		return;
+	}
+	arg->ret = TEEC_ERROR_NOT_SUPPORTED;
 }
 
 void optee_rpc_cmd(struct tee_context *ctx, struct optee *optee,

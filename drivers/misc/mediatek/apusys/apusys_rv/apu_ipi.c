@@ -240,6 +240,12 @@ int apu_ipi_send(struct mtk_apu *apu, u32 id, void *data, u32 len,
 #endif
 
 	dev = apu->dev;
+	if (READ_ONCE(apu->shutting_down)) {
+#if IS_ENABLED(CONFIG_VHOST_APU)
+		mutex_unlock(&apu->send_lock);
+#endif
+		return -ESHUTDOWN;
+	}
 	ipi = &apu->ipi_desc[id];
 	hw_ops = &apu->platdata->ops;
 
@@ -283,6 +289,10 @@ int apu_ipi_send(struct mtk_apu *apu, u32 id, void *data, u32 len,
 	}
 
 	mutex_lock(&apu->send_lock);
+	if (READ_ONCE(apu->shutting_down)) {
+		mutex_unlock(&apu->send_lock);
+		return -ESHUTDOWN;
+	}
 
 	if (ipi_attrs[id].direction == IPI_HOST_INITIATE &&
 	    apu->ipi_inbound_locked == IPI_LOCKED && !bypass_check(id)) {
@@ -787,6 +797,8 @@ int apu_power_on_off(struct platform_device *pdev, u32 id, u32 on, u32 off)
 
 	if (!apu)
 		return -EINVAL;
+	if (READ_ONCE(apu->shutting_down))
+		return -ESHUTDOWN;
 
 	dev = apu->dev;
 
@@ -1710,4 +1722,3 @@ struct mtk_apu *get_mtk_apu(void)
 {
 	return g_apu;
 }
-

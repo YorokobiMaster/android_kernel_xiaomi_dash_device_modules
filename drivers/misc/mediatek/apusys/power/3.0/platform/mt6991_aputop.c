@@ -607,6 +607,35 @@ static void release_smmu_hw_sema(void)
 	iounmap(mbox0);
 }
 
+static void mt6991_apu_top_shutdown(struct device *dev)
+{
+#if APU_HW_SEMA_CTRL
+	u32 host;
+	int ret;
+#endif
+
+	dev_info(dev, "reboot quiesce begin\n");
+#if APU_HW_SEMA_CTRL
+	host = plat_apu_boot_host();
+	if (host == SYS_APMCU) {
+		ret = apu_hw_sema_ctl(dev, APU_HW_SEMA_PWR_CTL,
+				SYS_APMCU, 0, -1);
+		if (ret)
+			dev_err(dev, "reboot power-control semaphore release failed: %d\n",
+				ret);
+		else
+			dev_info(dev, "reboot power-control semaphore released\n");
+	} else {
+		dev_info(dev, "reboot power-control semaphore owner %u; not releasing\n",
+			host);
+	}
+#endif
+	/* The next boot's pKVM SMMU PM_GET depends on semaphore 1 being free. */
+	release_smmu_hw_sema();
+	dev_info(dev, "reboot quiesce complete; APU_RPC_INTF_PWR_RDY=0x%x\n",
+		readl(apupw.regs[apu_rpc] + APU_RPC_INTF_PWR_RDY));
+}
+
 static int mt6991_apu_top_pb(struct platform_device *pdev)
 {
 	int ret = 0, val = 0;
@@ -853,6 +882,7 @@ const struct apupwr_plat_data mt6991_plat_data = {
 	.plat_name = "mt6991_apupwr",
 	.plat_aputop_on = mt6991_apu_top_on,
 	.plat_aputop_off = mt6991_apu_top_off,
+	.plat_aputop_shutdown = mt6991_apu_top_shutdown,
 	.plat_aputop_pb = mt6991_apu_top_pb,
 	.plat_aputop_rm = mt6991_apu_top_rm,
 	.plat_aputop_suspend = mt6991_apu_top_suspend,

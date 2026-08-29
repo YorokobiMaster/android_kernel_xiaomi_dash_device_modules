@@ -50,6 +50,7 @@ struct apupwr_plat_data {
 	const char *plat_name;
 	int (*plat_aputop_on)(struct device *dev);
 	int (*plat_aputop_off)(struct device *dev);
+	void (*plat_aputop_shutdown)(struct device *dev);
 	int (*plat_aputop_pb)(struct platform_device *pdev);
 	int (*plat_aputop_rm)(struct platform_device *pdev);
 	int (*plat_aputop_suspend)(struct device *dev);

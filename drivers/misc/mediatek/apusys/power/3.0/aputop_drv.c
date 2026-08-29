@@ -145,6 +145,16 @@ static int apu_top_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void apu_top_shutdown(struct platform_device *pdev)
+{
+	if (check_pwr_data())
+		return;
+
+	pm_runtime_barrier(&pdev->dev);
+	if (pwr_data->plat_aputop_shutdown)
+		pwr_data->plat_aputop_shutdown(&pdev->dev);
+}
+
 #if IS_ENABLED(CONFIG_PM_SLEEP)
 static int apu_top_suspend(struct device *dev)
 {
@@ -226,6 +236,7 @@ static const struct dev_pm_ops mtk_aputop_pm_ops = {
 static struct platform_driver apu_top_drv = {
 	.probe = apu_top_probe,
 	.remove = apu_top_remove,
+	.shutdown = apu_top_shutdown,
 	.driver = {
 		.name = "apu_top_3",
 		.pm = &mtk_aputop_pm_ops,

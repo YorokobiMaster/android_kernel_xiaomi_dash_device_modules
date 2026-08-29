@@ -25,6 +25,7 @@
 #include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/proc_fs.h>
+#include <linux/overflow.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -39,7 +40,6 @@
 #include "optee_smc.h"
 
 #define SET_KEY_FILE "/data/vendor/mitee/key.log"
-static bool read_b_buf = false;
 
 static int log_read_line(struct mitee_memlog_state *s, int put, int get)
 {
@@ -165,7 +165,7 @@ static int do_mitee_memlog_read(struct mitee_memlog_state *s, char __user *buf,
 
 	WARN_ON(!is_power_of_2(log->sz));
 
-	if (!read_b_buf) {
+	if (s->reading_boot_log) {
 		/*
 		* For this ring buffer, at any given point, alloc >= put >= get.
 		* The producer side of the buffer is not locked, so the put and alloc
@@ -188,7 +188,7 @@ static int do_mitee_memlog_read(struct mitee_memlog_state *s, char __user *buf,
 			return -EFAULT;
 
 		if (is_b_buf_empty(s)) {
-			read_b_buf = true;
+			s->reading_boot_log = false;
 			return 0;
 		}
 
@@ -288,11 +288,11 @@ static ssize_t mitee_memlog_read(struct file *file, char __user *buf,
 	struct mitee_memlog_state *s = pde_data(file_inode(file));
 	int ret = 0;
 
-	if (atomic_xchg(&s->readable, 0)) {
-		ret = do_mitee_memlog_read(s, buf, size);
-		s->poll_event = atomic_read(&s->mitee_log_event_count);
-		atomic_set(&s->readable, 1);
-	}
+	if (mutex_lock_interruptible(&s->read_lock))
+		return -ERESTARTSYS;
+	ret = do_mitee_memlog_read(s, buf, size);
+	s->poll_event = atomic_read(&s->mitee_log_event_count);
+	mutex_unlock(&s->read_lock);
 	return ret;
 }
 
@@ -319,7 +319,7 @@ static unsigned int mitee_memlog_poll(struct file *file,
 	struct mitee_memlog_state *s = pde_data(file_inode(file));
 	int mask = 0;
 
-	if (!is_buf_empty(s))
+	if ((s->reading_boot_log && !is_b_buf_empty(s)) || !is_buf_empty(s))
 		return POLLIN | POLLRDNORM;
 
 	poll_wait(file, &s->mitee_log_wq, wait);
@@ -340,22 +340,10 @@ static ssize_t mitee_memlog_key_read(struct file *file, char __user *buf,
 				     size_t size, loff_t *ppos)
 {
 	struct mitee_memlog_state *s = pde_data(file_inode(file));
-	int ret = 0;
-	char *psrc = NULL;
-	psrc = kzalloc(KEY_LENGTH, GFP_KERNEL);
+	char key[KEY_LENGTH];
 
-	if (!psrc)
-		return -ENOMEM;
-
-	memcpy(psrc, (const void *)s->log->aeskey, KEY_LENGTH);
-	if (copy_to_user(buf, psrc, KEY_LENGTH)) {
-		kfree(psrc);
-		pr_err("error miteelog mitee_memlog_key_read\n");
-		return -EFAULT;
-	}
-	kfree(psrc);
-	ret = KEY_LENGTH;
-	return ret;
+	memcpy(key, (const void *)s->log->aeskey, sizeof(key));
+	return simple_read_from_buffer(buf, size, ppos, key, sizeof(key));
 }
 
 static int mitee_memlog_key_open(struct inode *inode, struct file *file)
@@ -385,38 +373,26 @@ static const struct proc_ops mitee_memlog_key_fops = {
 	.proc_poll = mitee_memlog_key_poll,
 };
 
-static int mitee_call_notifier_register(struct notifier_block *n)
+static int mitee_call_notifier_register(struct optee *optee,
+					struct notifier_block *n)
 {
-	struct optee *optee = get_optee_drv_state();
-
-	if (!optee) {
-		pr_err("mitee_driver_state is NULL\n");
-		return -EFAULT;
-	}
-
 	return atomic_notifier_chain_register(&optee->notifier, n);
 }
 
-static int mitee_call_notifier_unregister(struct notifier_block *n)
+static int mitee_call_notifier_unregister(struct optee *optee,
+					  struct notifier_block *n)
 {
-	struct optee *optee = get_optee_drv_state();
-
-	if (!optee) {
-		pr_err("mitee_driver_state is NULL\n");
-		return -EFAULT;
-	}
-
 	return atomic_notifier_chain_unregister(&optee->notifier, n);
 }
 
-int mitee_memlog_probe(struct platform_device *pdev)
+int mitee_memlog_probe(struct platform_device *pdev, struct optee *optee)
 {
-	struct optee *optee = get_optee_drv_state();
 	struct mitee_memlog_state *s;
 	int result = 0;
 	phys_addr_t pa;
 	phys_addr_t begin;
 	phys_addr_t end;
+	phys_addr_t raw_end;
 	size_t size;
 	void *va;
 	struct ffa_send_direct_data data = { OPTEE_FFA_GET_MITEE_LOG_BUFFER };
@@ -435,7 +411,9 @@ int mitee_memlog_probe(struct platform_device *pdev)
 	s->mitee_dev = s->dev->parent;
 	s->get = 0;
 	s->b_get = 0;
-	read_b_buf = false;
+	s->reading_boot_log = true;
+	s->optee = optee;
+	mutex_init(&s->read_lock);
 
 	rc = optee->comm_ops->call(&data);
 	if (rc) {
@@ -444,8 +422,17 @@ int mitee_memlog_probe(struct platform_device *pdev)
 		goto error_alloc_log;
 	}
 	//pr_err("miteelog start=%x, size=%zu, setting=%x\n", (uint64_t)res.result.start, res.result.size,res.result.settings);
-	begin = roundup(data.data0, PAGE_SIZE);
-	end = rounddown(data.data0 + data.data1, PAGE_SIZE);
+	if (check_add_overflow((phys_addr_t)data.data0,
+			       (phys_addr_t)data.data1, &raw_end)) {
+		result = -EOVERFLOW;
+		goto error_alloc_log;
+	}
+	begin = roundup((phys_addr_t)data.data0, PAGE_SIZE);
+	end = rounddown(raw_end, PAGE_SIZE);
+	if (end <= begin) {
+		result = -EINVAL;
+		goto error_alloc_log;
+	}
 	pa = begin;
 	size = end - begin;
 
@@ -457,9 +444,19 @@ int mitee_memlog_probe(struct platform_device *pdev)
 		goto error_alloc_log;
 	}
 	s->log = va;
+	s->mapped_size = size;
+	if (size < offsetof(struct log_rb, data) ||
+	    !is_power_of_2(s->log->sz) ||
+	    !is_power_of_2(s->log->b_sz) ||
+	    s->log->sz > size - offsetof(struct log_rb, data) ||
+	    s->log->b_sz > size - offsetof(struct log_rb, data) - s->log->sz) {
+		pr_err("invalid mitee log ring geometry\n");
+		result = -EINVAL;
+		goto error_unmap_log;
+	}
 
 	s->call_notifier.notifier_call = mitee_memlog_call_notify;
-	result = mitee_call_notifier_register(&s->call_notifier);
+	result = mitee_call_notifier_register(optee, &s->call_notifier);
 	if (result < 0) {
 		dev_err(&pdev->dev, "failed to register mitee call notifier\n");
 		goto error_call_notifier;
@@ -493,8 +490,10 @@ int mitee_memlog_probe(struct platform_device *pdev)
 error_create_key_proc:
 	proc_remove(s->proc);
 error_create_log_proc:
-	mitee_call_notifier_unregister(&s->call_notifier);
+	mitee_call_notifier_unregister(optee, &s->call_notifier);
 error_call_notifier:
+error_unmap_log:
+	memunmap(s->log);
 //TODO notify tee we failed register notifier
 // trusty_std_call32(s->trusty_dev, SMC_SC_SHARED_LOG_RM,
 // (u32)pa, (u32)((u64)pa >> 32), 0);
@@ -518,7 +517,7 @@ int mitee_memlog_remove(struct platform_device *pdev)
 	dev_printk(KERN_DEBUG, &pdev->dev, "%s\n", __func__);
 	proc_remove(s->proc);
 	proc_remove(s->proc_key);
-	mitee_call_notifier_unregister(&s->call_notifier);
+	mitee_call_notifier_unregister(s->optee, &s->call_notifier);
 	//TODO notify tee we failed register notifier
 	// result = trusty_std_call32(s->trusty_dev, SMC_SC_SHARED_LOG_RM,
 	// (u32)pa, (u32)((u64)pa >> 32), 0);
@@ -526,6 +525,8 @@ int mitee_memlog_remove(struct platform_device *pdev)
 	// 	pr_err("trusty std call (SMC_SC_SHARED_LOG_RM) failed: %d\n", result);
 	// }
 	// __free_pages(s->log_pages, get_order(TRUSTY_LOG_SIZE));
+	memunmap(s->log);
+	platform_set_drvdata(pdev, NULL);
 	kfree(s);
 
 	return 0;

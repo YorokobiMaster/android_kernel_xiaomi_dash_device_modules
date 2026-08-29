@@ -345,15 +345,27 @@ static int mt6991_rproc_start(struct mtk_apu *apu)
 static int mt6991_rproc_stop(struct mtk_apu *apu)
 {
 	struct device *dev = apu->dev;
+	int ret = 0;
 
 	/* Hold runstall */
 	if (apu->platdata->flags & F_SECURE_BOOT)
-		apusys_rv_smc_call(dev,
+		ret = apusys_rv_smc_call(dev,
 			MTK_APUSYS_KERNEL_OP_APUSYS_RV_STOP_MP, 0);
 	else
 		iowrite32(0x1, apu->apu_ao_ctl + 8);
 
-	return 0;
+	return ret;
+}
+
+static void mt6991_rproc_shutdown(struct mtk_apu *apu)
+{
+	int ret;
+
+	cancel_delayed_work_sync(&apu_polling_on_work);
+	cancel_delayed_work_sync(&timeout_work);
+	ret = mt6991_rproc_stop(apu);
+	if (ret)
+		dev_warn(apu->dev, "reboot remoteproc stall returned %d\n", ret);
 }
 
 static void mt6991_apu_pwr_wake_lock(struct mtk_apu *apu, uint32_t id)
@@ -1288,6 +1300,7 @@ const struct mtk_apu_platdata mt6991_platdata = {
 		.exit	= mt6991_rproc_exit,
 		.start	= mt6991_rproc_start,
 		.stop	= mt6991_rproc_stop,
+		.shutdown = mt6991_rproc_shutdown,
 		.apu_memmap_init = mt6991_apu_memmap_init,
 		.apu_memmap_remove = mt6991_apu_memmap_remove,
 		.power_on_off = mt6991_power_on_off,
