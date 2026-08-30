@@ -183,8 +183,6 @@ struct aw882xx {
 	unsigned char dbg_en_prof;	/* debug enable/disable profile function */
 	unsigned char allow_pw;		/* allow power */
 	uint32_t rename_flag;
-	bool handset_gain_compat;
-	unsigned int handset_gain_index;
 	unsigned char sync_load;	/* sync load fw */
 
 	int reset_gpio;

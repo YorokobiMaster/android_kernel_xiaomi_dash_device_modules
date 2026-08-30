@@ -810,7 +810,6 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 		irq-gpio = <&pio 10 0x0>;
 		spk-sw-gpio = <&pio 30 0x0>;
 		sound-channel = <0>;
-		awinic,mtk-handset-pga-gain-compat;
 		sync-load = <1>;
 		aw-re-min = <5200>;
 		aw-re-max= <8000>;
