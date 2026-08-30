@@ -15168,7 +15168,7 @@ connsys_emi_config_hyp: connsys-emi-config-hyp {
 		<0x0>, /* mbox1 */
 		<0x0>, /* mbox2 */
 		<0x0>, /* mbox3 */
-		<0x4000>, /* mbox4, for AOV, IRQF_NO_SUSPEND */
+		<0x0>, /* mbox4 */
 		<0x0>; /* mbox5 */
 
 		core-0 = "enable";
