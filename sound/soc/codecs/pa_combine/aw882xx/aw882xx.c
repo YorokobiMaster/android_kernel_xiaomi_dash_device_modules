@@ -482,12 +482,17 @@ static int aw882xx_handset_gain_put(struct snd_kcontrol *kcontrol,
 		right > MTK_HANDSET_GAIN_MAX_INDEX)
 		return -EINVAL;
 
-	if (left != right) {
-		dev_warn(aw882xx->dev,
-			"reject unequal handset gain indices %u/%u",
+	/*
+	 * Runtime evidence: the MTK HAL (and tinymix) writes the two
+	 * elements with two sequential single-index set_value() calls,
+	 * so every change transits an unequal pair such as (new, old).
+	 * Element 0 is written first by the HAL and is authoritative;
+	 * the pair converges to equality on the second write.
+	 */
+	if (left != right)
+		dev_dbg(aw882xx->dev,
+			"transient unequal handset gain indices %u/%u, using element 0",
 			left, right);
-		return -EINVAL;
-	}
 
 	mutex_lock(&aw882xx->lock);
 	changed = aw882xx->handset_gain_index != left;
