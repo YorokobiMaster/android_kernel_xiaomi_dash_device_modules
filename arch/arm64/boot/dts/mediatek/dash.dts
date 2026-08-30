@@ -4,6 +4,14 @@
  */
 /dts-v1/;
 /plugin/;
+
+&odm {
+	simtray {
+		compatible = "xiaomi,simtray-status";
+		status-gpio = <&pio 44 0>;
+	};
+};
+
 #include <dt-bindings/clock/mt6991-clk.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
@@ -34,6 +42,10 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 		led_mode = <4>;
 		default-state = "FifteenPercent";
 	};
+};
+
+&mt6363keys {
+	power-off-time-sec = <1>;
 };
 
 &odm {
@@ -716,6 +728,10 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 	};
 };
 
+&mt6379_chg {
+	chgin-ov = <4>;
+};
+
 &typec_mux_switch {
 	orientation-switch;
 	mode-switch;
@@ -770,6 +786,19 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 	<46 4  1>;/* IPI_OUT_SCP_PM_NOTIFY_1 */
 };
 
+&odm {
+	frsm_amp {
+		compatible = "foursemi,frsm-amp";
+		frsm,amp-ndev = <2>;
+		frsm,has-tx-vi;
+		frsm,class-enable;
+		frsm,mntr-enable;
+		frsm,mntr-period = <2000>;
+		frsm,mntr-avg-count = <2>;
+		status = "ok";
+	};
+};
+
 &i2c0 {
 	clock-frequency = <400000>;
 	/* aw-top */
@@ -802,12 +831,48 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 		/*aw-cali-mode = "none";*/
 		status = "okay";
 	};
+	/* fs-top */
+	fsspk1: fs19xx_smartpa@50 {
+		compatible = "foursemi,fs19xx";
+		#sound-dai-cells = <0>;
+		reg = <0x50>;
+		sdz-gpios = <&pio 174 0>;
+		intz-gpios = <&pio 10 0>;
+		spksw-gpios = <&pio 30 0>;
+		fwm-name = "fs192x-spk1.bin";
+		spkr-id = <1>;
+		ref-rdc = <0x7000>;
+		retry-detect;
+		bsg-type = <1>;
+		mntr-scenes = <3>;
+		prot-bsg-table = <3500 962 3300 952 3100 943 2900 932 2700 922 2500 912>;
+		status = "ok";
+	};
+	/* fs-bot */
+	fsspk2: fs19xx_smartpa@51 {
+		compatible = "foursemi,fs19xx";
+		#sound-dai-cells = <0>;
+		reg = <0x51>;
+		sdz-gpios = <&pio 91 0>;
+		intz-gpios = <&pio 39 0>;
+		fwm-name = "fs192x-spk2.bin";
+		spkr-id = <2>;
+		ref-rdc = <0x7000>;
+		retry-detect;
+		bsg-type = <1>;
+		mntr-scenes = <3>;
+		prot-bsg-table = <3500 962 3300 952 3100 943 2900 932 2700 922 2500 912>;
+		status = "ok";
+	};
 };
 
 &sound {
 	mediatek,spk-i2s = <25 24>;
 	mediatek,speaker-codec {
 		sound-dai = <&awspk1>, <&awspk2>;
+	};
+	mediatek,speaker-codec-fs {
+		sound-dai = <&fsspk1>, <&fsspk2>;
 	};
 };
 
@@ -830,6 +895,7 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 
 &mmlsys1_config {
 	dl-enable;
+	dl-vdo;
 	event-ir-disp-done = /bits/ 16 <CMDQ_SYNC_TOKEN_MML_DISP_DONE_EVENT>;
 	event-mml-config = /bits/ 16 <CMDQ_SYNC_TOKEN_MML_STREAM_CONFIG>;
 };
@@ -1339,7 +1405,7 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 
 		sc,sc858x,bat-ovp-disable = <0>;
 		sc,sc858x,bat-ovp-threshold = <11>;/*4450 + val * 25*/
-		sc,sc858x,usb-ovp-threshold = <11>;/*11000 + val * 1000*/
+		sc,sc858x,usb-ovp-threshold = <15>;/*11000 + val * 1000*/
 		sc,sc858x,wpc-ovp-threshold = <11>;/*11000 + val * 1000*/
 		sc,sc858x,bus-ovp-threshold = <9>;/*15000 + val * 800*/
 		sc,sc858x,out-ovp-threshold = <1>;/*4800 + val * 200*/
@@ -1368,7 +1434,7 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
         ic_role = <0>;
         hl,hl7243,vbat-ovp-dis = <0>;
         hl,hl7243,vbat-ovp = <4900>;
-        hl,hl7243,vusb-ovp = <21000>;
+        hl,hl7243,vusb-ovp = <7500>;
         hl,hl7243,vwpc-ovp = <21000>;
         hl,hl7243,vbus-ovp-dis = <0>;
         hl,hl7243,vbus-ovp = <23000>;
@@ -1434,6 +1500,9 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 		support_revcable;
 		support_pchg_policy;
 		support-direct-cap-change;
+		cp_temp_fcc_limit = <15500>;
+		cp_temp_threshold = <110>;
+		pmic_ffc_forbid;
 
 		/* CN battery paremeter */
 		ffc_low_tbat = <150>;
@@ -1454,7 +1523,7 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 				51	100	3900	2619	1746
 				101	120	3900	3492	2619
 				121	150	3900	5238	3492
-				151	480	4220	17600	17600
+				151	480	4220	17000	17000
 				481	600	4100	4365	4365>;
 		jeita_fv_cfg = <(-100)	0	4540
 				1	50	4550
@@ -1497,21 +1566,21 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 
 		/* 20-48C cycle step */
 		/* 1-100cls */
-		step_chg_cfg_warm_1_cycle_atl = <3000	4200	17600
+		step_chg_cfg_warm_1_cycle_atl = <3000	4200	17000
 					4201	4300	12400
 					4301	4400	10476
 					4401	4500	8730
 					4501	4580	6984>;
 
 		/* 101-300cls */
-		step_chg_cfg_warm_100_cycle_atl = <3000	4150	17600
+		step_chg_cfg_warm_100_cycle_atl = <3000	4150	17000
 					4151	4270	11780
 					4271	4400	9952
 					4401	4500	8293
 					4501	4560	5587>;
 
 		/* 301-800cls */
-		step_chg_cfg_warm_300_cycle_atl = <3000	4150	17600
+		step_chg_cfg_warm_300_cycle_atl = <3000	4150	17000
 					4151	4270	10540
 					4271	4400	8904
 					4401	4500	7420
@@ -1558,21 +1627,21 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 
 		/* 20-48C cycle step */
 		/* 1-100cls */
-		step_chg_cfg_warm_1_cycle_cos = <3000	4210	17600
+		step_chg_cfg_warm_1_cycle_cos = <3000	4210	17000
 					4211	4310	12400
 					4311	4400	10476
 					4401	4500	8730
 					4501	4580	6984>;
 
 		/* 101-300cls */
-		step_chg_cfg_warm_100_cycle_cos = <3000	4160	17600
+		step_chg_cfg_warm_100_cycle_cos = <3000	4160	17000
 					4161	4280	11780
 					4281	4400	9952
 					4401	4500	8293
 					4501	4560	5587>;
 
 		/* 301-800cls */
-		step_chg_cfg_warm_300_cycle_cos = <3000	4160	17600
+		step_chg_cfg_warm_300_cycle_cos = <3000	4160	17000
 					4161	4280	10540
 					4281	4400	8904
 					4401	4500	7420
@@ -1606,15 +1675,15 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 
 		/* 20-48C cycle normal step */
 		/* 1-100cls */
-		step_normal_chg_cfg_warm_1_cycle_atl = <3000	4200	17600
+		step_normal_chg_cfg_warm_1_cycle_atl = <3000	4200	17000
 					4201	4530	6984>;
 
 		/* 101-300cls */
-		step_normal_chg_cfg_warm_100_cycle_atl = <3000	4150	17600
+		step_normal_chg_cfg_warm_100_cycle_atl = <3000	4150	17000
 					4151	4520	6984>;
 
 		/* 301-800cls */
-		step_normal_chg_cfg_warm_300_cycle_atl = <3000	4150	17600
+		step_normal_chg_cfg_warm_300_cycle_atl = <3000	4150	17000
 					4151	4510	6984>;
 
 		/* >800cls */
@@ -1641,15 +1710,15 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 					3901	4490	2793>;
 		/* 20-48C cycle step */
 		/* 1-100cls */
-		step_normal_chg_cfg_warm_1_cycle_cos = <3000	4210	17600
+		step_normal_chg_cfg_warm_1_cycle_cos = <3000	4210	17000
 					4211	4530	6984>;
 
 		/* 101-300cls */
-		step_normal_chg_cfg_warm_100_cycle_cos = <3000	4160	17600
+		step_normal_chg_cfg_warm_100_cycle_cos = <3000	4160	17000
 					4161	4520	6984>;
 
 		/* 301-800cls */
-		step_normal_chg_cfg_warm_300_cycle_cos = <3000	4160	17600
+		step_normal_chg_cfg_warm_300_cycle_cos = <3000	4160	17000
 					4161	4510	6984>;
 
 		/* >800cls */
@@ -1678,7 +1747,7 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 				51	100	3900	2481	1654
 				101	120	3900	4962	3308
 				121	150	4000	9097	9097
-				151	480	4100	17600	17600
+				151	480	4100	17000	17000
 				481	600	4100	4235	4235>;
 		jeita_fv_cfg_gl = <(-100)	0	4550
 				1	50	4560
@@ -1722,21 +1791,21 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 
 		/* 20-48C cycle step */
 		/* 1-100cls */
-		step_chg_cfg_warm_1_cycle_atl_gl = <3000	4100	17600
+		step_chg_cfg_warm_1_cycle_atl_gl = <3000	4100	17000
 					4101	4200	12400
 					4201	4400	9924
 					4401	4500	8270
 					4501	4590	6616>;
 
 		/* 101-300cls */
-		step_chg_cfg_warm_100_cycle_atl_gl = <3000	4050	17600
+		step_chg_cfg_warm_100_cycle_atl_gl = <3000	4050	17000
 					4051	4170	11780
 					4171	4400	9427
 					4401	4500	7856
 					4501	4570	6285>;
 
 		/* 301-800cls */
-		step_chg_cfg_warm_300_cycle_atl_gl = <3000	4050	17600
+		step_chg_cfg_warm_300_cycle_atl_gl = <3000	4050	17000
 					4051	4170	10540
 					4171	4400	8435
 					4401	4500	7092
@@ -1770,7 +1839,7 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 
 		/* 20-48C cycle step */
 		/* 1-100cls */
-		step_normal_chg_cfg_warm_1_cycle_atl_gl = <3000	4100	17600
+		step_normal_chg_cfg_warm_1_cycle_atl_gl = <3000	4100	17000
 					4101	4540	6616>;
 
 		/* 101-300cls */
@@ -1791,7 +1860,7 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 		thermal_limit_qc3_18w = <2500 2500 2500 2500 2500 2500 2400 2300 2200 2100 1500 1000 800 700 600 500>;
 		thermal_limit_qc3_27w = <2500 2500 2500 2500 2500 2500 2400 2300 2200 2100 1500 1000 800 700 600 500>;
 		thermal_limit_qc35 = <2500 2500 2500 2500 2500 2500 2400 2300 2200 2100 1500 1000 800 700 600 500>;
-		thermal_limit_pd = <17600 13500 11000 9000 8000 7000 6000 5000 4500 3500 3000 2500 2000 1500 1000 500>;
+		thermal_limit_pd = <17000 13500 11000 9000 8000 7000 6000 5000 4500 3500 3000 2500 2000 1500 1000 500>;
 
 		smart_bypass_support;
 		smart_bypass_entry_soc = <40>;
@@ -1804,13 +1873,13 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 				301	330	3000
 				331	370	2500
 				371	800	1000>;
-		smart_bypass_med_lmt_cfg = <(-100)	250	17600
+		smart_bypass_med_lmt_cfg = <(-100)	250	17000
 				251	280	10000
 				281	300	8000
 				301	330	6000
 				331	370	5000
 				371	800	2000>;
-		smart_bypass_low_lmt_cfg = <(-100)	250	17600
+		smart_bypass_low_lmt_cfg = <(-100)	250	17000
 				251	280	12000
 				281	300	9000
 				301	330	7000
@@ -1840,7 +1909,7 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 		compatible = "pd_cp_manager";
 		fv = <4530>;
 		fv_ffc = <4580>;
-		max_fcc = <17600>;
+		max_fcc = <17000>;
 		max_vbus = <20000>;
 		max_ibus = <4400>;
 		fcc_low_hyst = <150>;
@@ -1857,7 +1926,6 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 		max_pdo_vbus = <21000>;
 		mt6375_control_gpio = <&pio 93 0x0>;
 		support_4_1_mode;
-		support_pmic_parachg;
 		switch1_1_enter = <2500>;
 		switch1_1_exit = <3700>;
 		switch2_1_enter = <4200>;
@@ -1877,21 +1945,21 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 
 	mi,lossless_rechg_nvt_cn;
 	mi,cycle_volt_nvt_cn = "0,100,4201,4301,4401,4501,4580,100,300,4151,4271,4401,4501,4560,300,800,4151,4271,4401,4501,4550,800,10000,4151,4271,4401,4481,4530";
-	mi,cycle_step_curr_nvt_cn= "0,100,17600,12400,10476,8730,6984,100,300,17600,11780,9952,8293,5587,300,800,17600,10540,8904,7420,5936,800,10000,14080,9920,8380,6984,5587";
+	mi,cycle_step_curr_nvt_cn= "0,100,17000,12400,10476,8730,6984,100,300,17000,11780,9952,8293,5587,300,800,17000,10540,8904,7420,5936,800,10000,14080,9920,8380,6984,5587";
 	mi,temp_term_curr_nvt_cn = "20,35,1309,35,40,2007,40,48,2880";
-	mi,thermal_nvt_cn = "17600,13500,11000,9000,8000,7000,6000,5000,4000,3500,3000,2500,2000,1500,1000,500";
+	mi,thermal_nvt_cn = "17000,13500,11000,9000,8000,7000,6000,5000,4000,3500,3000,2500,2000,1500,1000,500";
 
 	mi,lossless_rechg_coslight_cn;
 	mi,cycle_volt_coslight_cn = "0,100,4211,4311,4401,4501,4580,100,300,4161,4281,4401,4501,4560,300,800,4161,4281,4401,4501,4550,800,10000,4161,4281,4401,4481,4530";
-	mi,cycle_step_curr_coslight_cn= "0,100,17600,12400,10476,8730,6984,100,300,17600,11780,9952,8293,5587,300,800,17600,10540,8904,7420,5936,800,10000,14080,9920,8380,6984,5587";
+	mi,cycle_step_curr_coslight_cn= "0,100,17000,12400,10476,8730,6984,100,300,17000,11780,9952,8293,5587,300,800,17000,10540,8904,7420,5936,800,10000,14080,9920,8380,6984,5587";
 	mi,temp_term_curr_coslight_cn = "20,35,1222,35,40,1833,40,48,2619";
-	mi,thermal_coslight_cn = "17600,13500,11000,9000,8000,7000,6000,5000,4000,3500,3000,2500,2000,1500,1000,500";
+	mi,thermal_coslight_cn = "17000,13500,11000,9000,8000,7000,6000,5000,4000,3500,3000,2500,2000,1500,1000,500";
 
 	mi,lossless_rechg_nvt_global;
 	mi,cycle_volt_nvt_global = "0,100,4101,4201,4401,4501,4590,100,300,4051,4171,4401,4501,4570,300,800,4051,4171,4401,4501,4560,800,10000,4051,4171,4401,4481,4540";
-	mi,cycle_step_curr_nvt_global= "0,100,17600,12400,9926,8270,6616,100,300,17600,11780,9427,7856,6285,300,800,17600,10540,8435,7092,5623,800,10000,14080,9920,7939,6616,5623";
-	mi,temp_term_curr_nvt_global = "20,30,1571,30,35,2067,35,40,3556,40,48,5458";
-	mi,thermal_nvt_global = "17600,13500,11000,9000,8000,7000,6000,5000,4000,3500,3000,2500,2000,1500,1000,500";
+	mi,cycle_step_curr_nvt_global= "0,100,17000,12400,9926,8270,6616,100,300,17000,11780,9427,7856,6285,300,800,17000,10540,8435,7092,5623,800,10000,14080,9920,7939,6616,5623";
+	mi,temp_term_curr_nvt_global = "20,30,1571,30,35,2067,35,40,3556,40,48,5093";
+	mi,thermal_nvt_global = "17000,13500,11000,9000,8000,7000,6000,5000,4000,3500,3000,2500,2000,1500,1000,500";
 };
 
 /* charger end */
@@ -2029,7 +2097,7 @@ bootargs_ext_fac = "cpufreq.default_governor=conservative \
 		fs3002_default_vib_mode=< 3 >;
 		fs3002_vbat_mode=< 0 >;
 		fs3002_lk_f0_cali=< 0 >;
-		fs3002_bypass_system_gain=< 1 >;
+		fs3002_bypass_system_gain=< 0 >;
 		fs3002_f0_cali_data_mode=< 0 >;
 		fs3002_lr_pgagain=< 5 >;
 		fs3002_gain_adjust=< 0 >;
