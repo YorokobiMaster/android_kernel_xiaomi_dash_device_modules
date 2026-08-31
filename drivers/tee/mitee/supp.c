@@ -49,8 +49,9 @@ void optee_supp_uninit(struct optee_supp *supp)
 	idr_destroy(&supp->idr);
 }
 
-void optee_supp_release(struct optee_supp *supp)
+void optee_supp_shutdown(struct optee *optee)
 {
+	struct optee_supp *supp = &optee->supp;
 	int id;
 	struct optee_supp_req *req;
 	struct optee_supp_req *req_tmp;
@@ -74,8 +75,16 @@ void optee_supp_release(struct optee_supp *supp)
 
 	supp->ctx = NULL;
 	supp->req_id = -1;
+	complete(&supp->reqs_c);
 
 	mutex_unlock(&supp->mutex);
+}
+
+void optee_supp_release(struct optee_supp *supp)
+{
+	struct optee *optee = container_of(supp, struct optee, supp);
+
+	optee_supp_shutdown(optee);
 	wait_event(supp->refs_wq, !READ_ONCE(supp->refs));
 }
 
@@ -140,6 +149,11 @@ u32 optee_supp_thrd_req(struct tee_context *ctx, u32 func, size_t num_params,
 
 	/* Insert the request in the request list */
 	mutex_lock(&supp->mutex);
+	if (mitee_lifecycle_is_shutting_down(optee)) {
+		mutex_unlock(&supp->mutex);
+		kfree(req);
+		return TEEC_ERROR_COMMUNICATION;
+	}
 	list_add_tail(&req->link, &supp->reqs);
 	req->in_queue = true;
 	mutex_unlock(&supp->mutex);
@@ -286,6 +300,10 @@ int optee_supp_recv(struct tee_context *ctx, u32 *func, u32 *num_params,
 
 	while (true) {
 		mutex_lock(&supp->mutex);
+		if (mitee_lifecycle_is_shutting_down(optee)) {
+			mutex_unlock(&supp->mutex);
+			return -ESHUTDOWN;
+		}
 		req = supp_pop_entry(supp, *num_params - num_meta, &id);
 		mutex_unlock(&supp->mutex);
 

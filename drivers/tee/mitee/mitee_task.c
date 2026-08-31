@@ -415,14 +415,14 @@ static void handle_rpc(struct tee_context *ctx, struct optee_msg_arg *arg)
 
 static bool supp_ready(struct optee *optee)
 {
-	return READ_ONCE(optee->supp.ctx) || READ_ONCE(optee->shutting_down);
+	return READ_ONCE(optee->supp.ctx) || mitee_lifecycle_is_shutting_down(optee);
 }
 
 static bool mitee_call_slot_ready(struct optee *optee)
 {
 	unsigned int n;
 
-	if (READ_ONCE(optee->shutting_down))
+	if (mitee_lifecycle_is_shutting_down(optee))
 		return true;
 	if (READ_ONCE(optee->active_calls) >=
 	    READ_ONCE(optee->concurrency_limit))
@@ -520,7 +520,7 @@ int mitee_worker_fn(void *data)
 			if (msg.command == MITEE_MSG_CMD_RPC) {
 				for (;;) {
 					rc = wait_event_interruptible(*supp_wq, supp_ready(optee));
-					if (rc || READ_ONCE(optee->shutting_down)) {
+					if (rc || mitee_lifecycle_is_shutting_down(optee)) {
 						rc = rc ?: -ESHUTDOWN;
 						goto task_error;
 					}
@@ -587,7 +587,6 @@ int mitee_workers_init(struct optee *optee)
 			int rc = PTR_ERR(worker->thread);
 
 			worker->thread = NULL;
-			mitee_workers_deinit(optee);
 			return rc;
 		}
 	}
@@ -598,9 +597,6 @@ void mitee_workers_deinit(struct optee *optee)
 {
 	unsigned int n;
 
-	WRITE_ONCE(optee->shutting_down, true);
-	wake_up_all(&optee->supp_ctx_wq);
-	wake_up_all(&optee->concurrency_wq);
 	for (n = 0; n < MITEE_WORKER_COUNT; n++) {
 		struct mitee_worker *worker = &optee->workers[n];
 
@@ -625,7 +621,7 @@ static int mitee_call_slot_get(struct optee *optee,
 			return rc;
 
 		mutex_lock(&optee->concurrency_lock);
-		if (optee->shutting_down) {
+		if (mitee_lifecycle_is_shutting_down_locked(optee)) {
 			mutex_unlock(&optee->concurrency_lock);
 			return -ESHUTDOWN;
 		}

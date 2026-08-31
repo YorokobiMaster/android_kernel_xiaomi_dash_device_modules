@@ -35,6 +35,16 @@ void optee_wait_queue_init(struct optee_wait_queue *priv)
 	INIT_LIST_HEAD(&priv->db);
 }
 
+void optee_wait_queue_abort(struct optee_wait_queue *priv)
+{
+	struct wq_entry *w;
+
+	mutex_lock(&priv->mu);
+	list_for_each_entry(w, &priv->db, link)
+		complete(&w->c);
+	mutex_unlock(&priv->mu);
+}
+
 void optee_wait_queue_exit(struct optee_wait_queue *priv)
 {
 	struct wq_entry *w;
@@ -202,12 +212,14 @@ out:
 	return w;
 }
 
-static void wq_sleep(struct optee_wait_queue *wq, u32 key)
+static void wq_sleep(struct optee *optee, u32 key)
 {
+	struct optee_wait_queue *wq = &optee->wait_queue;
 	struct wq_entry *w = wq_entry_get(wq, key);
 
 	if (w) {
-		wait_for_completion(&w->c);
+		if (!mitee_lifecycle_is_shutting_down(optee))
+			wait_for_completion(&w->c);
 		mutex_lock(&wq->mu);
 		list_del(&w->link);
 		mutex_unlock(&wq->mu);
@@ -235,7 +247,7 @@ static void handle_rpc_func_cmd_wq(struct optee *optee,
 
 	switch (arg->params[0].u.value.a) {
 	case OPTEE_RPC_WAIT_QUEUE_SLEEP:
-		wq_sleep(&optee->wait_queue, arg->params[0].u.value.b);
+		wq_sleep(optee, arg->params[0].u.value.b);
 		break;
 	case OPTEE_RPC_WAIT_QUEUE_WAKEUP:
 		wq_wakeup(&optee->wait_queue, arg->params[0].u.value.b);

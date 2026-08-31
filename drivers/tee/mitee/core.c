@@ -113,7 +113,7 @@ int noinline optee_open_common(struct tee_context *ctx, bool cap_memref_null)
 	struct tee_device *teedev = ctx->teedev;
 	struct optee *optee = tee_get_drvdata(teedev);
 
-	if (READ_ONCE(optee->shutting_down))
+	if (mitee_lifecycle_is_shutting_down(optee))
 		return -ESHUTDOWN;
 
 	ctxdata = kzalloc(sizeof(*ctxdata), GFP_KERNEL);
@@ -122,16 +122,18 @@ int noinline optee_open_common(struct tee_context *ctx, bool cap_memref_null)
 
 	if (teedev == optee->supp_teedev) {
 		bool busy = true;
+		bool shutting_down;
 
 		mutex_lock(&optee->supp.mutex);
-		if (!optee->supp.ctx) {
+		shutting_down = mitee_lifecycle_is_shutting_down(optee);
+		if (!shutting_down && !optee->supp.ctx) {
 			busy = false;
 			optee->supp.ctx = ctx;
 		}
 		mutex_unlock(&optee->supp.mutex);
-		if (busy) {
+		if (shutting_down || busy) {
 			kfree(ctxdata);
-			return -EBUSY;
+			return shutting_down ? -ESHUTDOWN : -EBUSY;
 		}
 		wake_up_all(&optee->supp_ctx_wq);
 #if 0

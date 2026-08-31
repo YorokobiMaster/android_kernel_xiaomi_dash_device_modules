@@ -1093,25 +1093,69 @@ static void mitee_dynamic_mem_reclaim_all(void)
 	}
 }
 
+void mitee_lifecycle_init(struct optee *optee)
+{
+	mutex_init(&optee->lifecycle_lock);
+	optee->lifecycle_state = MITEE_LIFECYCLE_ONLINE;
+}
+
+void mitee_lifecycle_uninit(struct optee *optee)
+{
+	WARN_ON(READ_ONCE(optee->lifecycle_state) !=
+		MITEE_LIFECYCLE_STOPPED);
+	mutex_destroy(&optee->lifecycle_lock);
+}
+
+int mitee_lifecycle_shutdown(struct optee *optee)
+{
+	long drained;
+	int rc = 0;
+
+	mutex_lock(&optee->lifecycle_lock);
+	if (READ_ONCE(optee->lifecycle_state) == MITEE_LIFECYCLE_STOPPED)
+		goto out;
+
+	mutex_lock(&optee->concurrency_lock);
+	if (optee->lifecycle_state == MITEE_LIFECYCLE_ONLINE)
+		WRITE_ONCE(optee->lifecycle_state,
+			   MITEE_LIFECYCLE_QUIESCING);
+	mutex_unlock(&optee->concurrency_lock);
+
+	wake_up_all(&optee->concurrency_wq);
+	wake_up_all(&optee->supp_ctx_wq);
+	optee_wait_queue_abort(&optee->wait_queue);
+	optee_supp_shutdown(optee);
+
+	if (READ_ONCE(optee->lifecycle_state) ==
+	    MITEE_LIFECYCLE_QUIESCING) {
+		drained = wait_event_timeout(optee->concurrency_wq,
+					     !READ_ONCE(optee->active_calls),
+					     msecs_to_jiffies(5000));
+		if (!drained) {
+			pr_err("quiesce timed out with %u active calls\n",
+			       READ_ONCE(optee->active_calls));
+			rc = -ETIMEDOUT;
+			goto out;
+		}
+		WRITE_ONCE(optee->lifecycle_state, MITEE_LIFECYCLE_DRAINED);
+	}
+
+	mitee_workers_deinit(optee);
+	mitee_dynamic_mem_reclaim_all();
+	WRITE_ONCE(optee->lifecycle_state, MITEE_LIFECYCLE_STOPPED);
+	pr_info("lifecycle stopped\n");
+out:
+	mutex_unlock(&optee->lifecycle_lock);
+	return rc;
+}
+
 static int mitee_reboot_notify(struct notifier_block *nb,
 			       unsigned long event, void *unused)
 {
 	struct optee *optee = container_of(nb, struct optee, reboot_notifier);
-	long drained;
 
-	WRITE_ONCE(optee->shutting_down, true);
-	wake_up_all(&optee->concurrency_wq);
-	wake_up_all(&optee->supp_ctx_wq);
-	drained = wait_event_timeout(optee->concurrency_wq,
-				     !READ_ONCE(optee->active_calls),
-				     msecs_to_jiffies(5000));
-	if (!drained)
-		pr_err("reboot quiesce timed out with %u active calls\n",
-		       READ_ONCE(optee->active_calls));
-	else
-		mitee_dynamic_mem_reclaim_all();
-	if (drained)
-		pr_info("reboot quiesce complete\n");
+	if (mitee_lifecycle_shutdown(optee))
+		pr_err("reboot lifecycle shutdown incomplete\n");
 
 	return NOTIFY_DONE;
 }
@@ -1130,7 +1174,6 @@ static int __init mitee_core_init(void)
 	bool queue_ready = false;
 	bool tasks_ready = false;
 	bool proc_ready = false;
-	bool workers_ready = false;
 	u32 sec_caps = 0;
 	int rc = 0;
 	sec_caps |= OPTEE_SMC_SEC_CAP_HAVE_RESERVED_SHM;
@@ -1166,7 +1209,7 @@ static int __init mitee_core_init(void)
 	init_waitqueue_head(&optee->supp_ctx_wq);
 	optee->concurrency_limit = MITEE_WORKER_COUNT;
 	optee->active_calls = 0;
-	optee->shutting_down = false;
+	mitee_lifecycle_init(optee);
 	ATOMIC_INIT_NOTIFIER_HEAD(&optee->notifier);
 	mitee_dynamic_mem_init();
 
@@ -1290,7 +1333,6 @@ static int __init mitee_core_init(void)
 		pr_err("failed to start mitee workers: %d\n", rc);
 		goto err_shutdown;
 	}
-	workers_ready = true;
 
 	rc = tee_device_register(optee->teedev);
 	if (rc)
@@ -1326,6 +1368,8 @@ err_shutdown:
 		unregister_reboot_notifier(&optee->reboot_notifier);
 		optee->reboot_notifier_registered = false;
 	}
+	if (mitee_lifecycle_shutdown(optee))
+		pr_err("initialization unwind lifecycle shutdown incomplete\n");
 	#if MITEE_FEATURE_FW_NP_ENABLE
 	optee_unregister_devices();
 	#endif
@@ -1333,11 +1377,6 @@ err_shutdown:
 		tee_device_unregister(optee->teedev);
 	if (supp_registered)
 		tee_device_unregister(optee->supp_teedev);
-	WRITE_ONCE(optee->shutting_down, true);
-	wake_up_all(&optee->concurrency_wq);
-	wake_up_all(&optee->supp_ctx_wq);
-	if (workers_ready)
-		mitee_workers_deinit(optee);
 	if (proc_ready)
 		mitee_proc_deinit(optee);
 	if (tasks_ready)
@@ -1355,7 +1394,6 @@ err_shutdown:
 	}
 	optee_svc = NULL;
 	mitee_rpc_callback_queue_deinit(&optee->cb_queue);
-	mitee_dynamic_mem_reclaim_all();
 	mitee_dynamic_mem_deinit();
 	optee_supp_release(&optee->supp);
 	optee_supp_uninit(&optee->supp);
@@ -1371,6 +1409,7 @@ err_shutdown:
 		memunmap(memremaped_shm);
 	if (ffa_registered)
 		optee->comm_ops->unregister_abi();
+	mitee_lifecycle_uninit(optee);
 err_free_optee:
 	kfree(optee);
 err_tee_exit:
@@ -1488,6 +1527,10 @@ static void __exit mitee_core_exit(void)
 		unregister_reboot_notifier(&optee->reboot_notifier);
 		optee->reboot_notifier_registered = false;
 	}
+	if (mitee_lifecycle_shutdown(optee)) {
+		pr_err("module-exit lifecycle shutdown incomplete\n");
+		return;
+	}
 
 	mitee_proc_deinit(optee);
 	#if MITEE_FEATURE_FW_NP_ENABLE
@@ -1495,10 +1538,6 @@ static void __exit mitee_core_exit(void)
 	#endif
 	tee_device_unregister(optee->teedev);
 	tee_device_unregister(optee->supp_teedev);
-	WRITE_ONCE(optee->shutting_down, true);
-	wake_up_all(&optee->concurrency_wq);
-	wake_up_all(&optee->supp_ctx_wq);
-	mitee_workers_deinit(optee);
 	mitee_task_list_deinit(&optee->tasks);
 	mitee_msg_queue_deinit(&optee->msg_queue);
 	mitee_memlog_remove(optee->mitee_memlog_pdev);
@@ -1506,7 +1545,6 @@ static void __exit mitee_core_exit(void)
 	optee->mitee_memlog_pdev = NULL;
 	optee_bm_disable();
 	mitee_rpc_callback_queue_deinit(&optee->cb_queue);
-	mitee_dynamic_mem_reclaim_all();
 	mitee_dynamic_mem_deinit();
 	optee_supp_release(&optee->supp);
 	optee_supp_uninit(&optee->supp);
@@ -1517,6 +1555,7 @@ static void __exit mitee_core_exit(void)
 		memunmap(optee->memremaped_shm);
 	optee_svc = NULL;
 	optee->comm_ops->unregister_abi();
+	mitee_lifecycle_uninit(optee);
 	kfree(optee);
 	mitee_tee_exit();
 }

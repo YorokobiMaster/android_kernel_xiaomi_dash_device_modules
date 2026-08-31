@@ -113,6 +113,13 @@ enum mitee_comm_type {
 	MITEE_COMM_FFA = 0,
 };
 
+enum mitee_lifecycle_state {
+	MITEE_LIFECYCLE_ONLINE = 0,
+	MITEE_LIFECYCLE_QUIESCING,
+	MITEE_LIFECYCLE_DRAINED,
+	MITEE_LIFECYCLE_STOPPED,
+};
+
 struct mitee_comm_ops {
 	enum mitee_comm_type type;
 	int (*register_abi)(void);
@@ -192,17 +199,33 @@ struct optee {
 	struct mitee_task_list tasks;
 	/* Serializes the live call count and configured concurrency limit. */
 	struct mutex concurrency_lock;
+	/* Serializes shutdown attempts and lifecycle state advancement. */
+	struct mutex lifecycle_lock;
 	wait_queue_head_t concurrency_wq;
 	wait_queue_head_t supp_ctx_wq;
 	unsigned int active_calls;
 	unsigned int concurrency_limit;
-	bool shutting_down;
+	enum mitee_lifecycle_state lifecycle_state;
 	bool reboot_notifier_registered;
 	struct notifier_block reboot_notifier;
 	struct proc_dir_entry *concurrency_proc;
 	atomic_t workers_started;
 	struct mitee_worker workers[MITEE_WORKER_COUNT];
 };
+
+static inline bool mitee_lifecycle_is_shutting_down(const struct optee *optee)
+{
+	return READ_ONCE(optee->lifecycle_state) != MITEE_LIFECYCLE_ONLINE;
+}
+
+static inline bool mitee_lifecycle_is_shutting_down_locked(const struct optee *optee)
+{
+	return optee->lifecycle_state != MITEE_LIFECYCLE_ONLINE;
+}
+
+void mitee_lifecycle_init(struct optee *optee);
+void mitee_lifecycle_uninit(struct optee *optee);
+int mitee_lifecycle_shutdown(struct optee *optee);
 
 struct optee_session {
 	struct list_head list_node;
@@ -234,6 +257,7 @@ struct optee_call_ctx {
 };
 
 void optee_wait_queue_init(struct optee_wait_queue *wq);
+void optee_wait_queue_abort(struct optee_wait_queue *wq);
 void optee_wait_queue_exit(struct optee_wait_queue *wq);
 void mitee_rpc_callback_queue_init(struct mitee_rpc_callback_queue *queue);
 void mitee_rpc_callback_queue_deinit(struct mitee_rpc_callback_queue *queue);
@@ -244,6 +268,7 @@ u32 optee_supp_thrd_req(struct tee_context *ctx, u32 func, size_t num_params,
 int optee_supp_read(struct tee_context *ctx, void __user *buf, size_t len);
 int optee_supp_write(struct tee_context *ctx, void __user *buf, size_t len);
 void optee_supp_init(struct optee_supp *supp);
+void optee_supp_shutdown(struct optee *optee);
 void optee_supp_uninit(struct optee_supp *supp);
 void optee_supp_release(struct optee_supp *supp);
 struct tee_context *optee_supp_get_ctx(struct optee_supp *supp);
