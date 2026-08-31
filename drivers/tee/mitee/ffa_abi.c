@@ -940,39 +940,41 @@ static int mitee_parse_dts(struct optee *optee)
 	return rc;
 }
 
-int mitee_dynamic_mem_free_ffa(uint64_t mem_handle)
+static int mitee_dynamic_mem_free_ffa(struct optee *optee,
+				      uint64_t mem_handle)
 {
-	struct sg_table *sgt;
 	struct mem_desc *desc = NULL;
-	uint32_t mem_size = 0;
 	struct ffa_device *ffa_dev = mitee_ffa_ctx.ffa_dev;
 	const struct ffa_mem_ops *mem_ops = ffa_dev->ops->mem_ops;
+	int rc;
 
-	desc = mitee_dynamic_mem_take_node(mem_handle);
+	desc = mitee_dynamic_mem_take(&optee->dynamic_mem, mem_handle);
 	if (!desc) {
 		 pr_err("mitee: free memory with handle(0x%llx) failed\n", mem_handle);
 		 return -EINVAL;
 	}
 
-	sgt = desc->sgt;
-	mem_size = desc->mem_size;
-	if (mem_ops->memory_reclaim(mem_handle, 0)) {
+	rc = mem_ops->memory_reclaim(mem_handle, 0);
+	if (rc) {
 		pr_err("mitee: failed to reclaim dynamic memory 0x%llx\n",
 		       mem_handle);
-		mitee_dynamic_mem_restore_node(desc);
-		return -EBUSY;
+		mitee_dynamic_mem_restore(&optee->dynamic_mem, desc);
+		return rc;
 	}
-	mitee_free_memory_sgt(mem_size, sgt);
+	mitee_free_memory_sgt(desc->mem_size, desc->sgt);
 	kfree(desc);
 	return 0;
 }
 
-int mitee_dynamic_mem_allocate_ffa(uint32_t mem_size, uint64_t *mem_handle,
-				   void *buf, uint32_t size_in,
-				   uint32_t *size_out)
+static int mitee_dynamic_mem_allocate_ffa(struct optee *optee,
+					  uint32_t mem_size,
+					  uint64_t *mem_handle,
+					  void *buf, uint32_t size_in,
+					  uint32_t *size_out)
 {
 	u32 size_aligned;
 	struct sg_table *sgt = NULL;
+	struct mem_desc *desc;
 	int rc;
 	struct ffa_device *ffa_dev = mitee_ffa_ctx.ffa_dev;
 	const struct ffa_mem_ops *mem_ops = ffa_dev->ops->mem_ops;
@@ -996,28 +998,31 @@ int mitee_dynamic_mem_allocate_ffa(uint32_t mem_size, uint64_t *mem_handle,
 		return rc;
 	}
 
+	desc = kmalloc(sizeof(*desc), GFP_KERNEL);
+	if (!desc) {
+		pr_err("mitee: failed to allocate dynamic memory descriptor\n");
+		rc = -ENOMEM;
+		goto err_free_sgt;
+	}
+	desc->sgt = sgt;
+	desc->global_id = 0;
+	desc->mem_size = size_aligned;
+	INIT_LIST_HEAD(&desc->node);
+
 	args.sg = sgt->sgl;
 	rc = mem_ops->memory_lend(&args);
 	if (rc) {
 		pr_err("mitee: failed to lend memory with %d\n", rc);
-		goto err_out2;
+		goto err_free_desc;
 	}
 
-	rc = mitee_dynamic_mem_add_node(args.g_handle, sgt, size_aligned);
-	if (rc) {
-		pr_err("mitee: failed to add dynamic mem node with %d\n", rc);
-		goto err_out1;
-	}
-
+	desc->global_id = args.g_handle;
+	mitee_dynamic_mem_add(&optee->dynamic_mem, desc);
 	*mem_handle = args.g_handle;
 	return 0;
-err_out1:
-	if (mem_ops->memory_reclaim(args.g_handle, 0)) {
-		pr_crit("leaking dynamic memory after FF-A reclaim failure: 0x%llx\n",
-			args.g_handle);
-		return rc;
-	}
-err_out2:
+err_free_desc:
+	kfree(desc);
+err_free_sgt:
 	mitee_free_memory_sgt(size_aligned, sgt);
 	return rc;
 }
@@ -1025,11 +1030,11 @@ err_out2:
 uint32_t mitee_rpc_callback(struct optee_msg_param_value *value, void *buf,
 			    uint32_t size_in, uint32_t *size_out)
 {
-
+	struct optee *optee = get_optee_drv_state();
 	uint32_t module_id, sub_cmd, mem_size;
 	uint64_t mem_handle;
 
-	if (!value) {
+	if (!optee || !value) {
 		pr_err("mitee rpc call: invalid value\n");
 		return TEEC_ERROR_BAD_PARAMETERS;
 	}
@@ -1043,7 +1048,7 @@ uint32_t mitee_rpc_callback(struct optee_msg_param_value *value, void *buf,
 		}
 
 		mem_size = (uint32_t)value->c;
-		if (mitee_dynamic_mem_allocate_ffa(mem_size, &mem_handle,
+		if (mitee_dynamic_mem_allocate_ffa(optee, mem_size, &mem_handle,
 						   buf, size_in, size_out)) {
 			goto bad;
 		}
@@ -1057,7 +1062,7 @@ uint32_t mitee_rpc_callback(struct optee_msg_param_value *value, void *buf,
 		}
 
 		mem_handle = value->c;
-		if (mitee_dynamic_mem_free_ffa(mem_handle))
+		if (mitee_dynamic_mem_free_ffa(optee, mem_handle))
 			return TEEC_ERROR_COMMUNICATION;
 		break;
 	//only for test OPTEE_REE_CALLBACK_CALL
@@ -1072,33 +1077,38 @@ bad:
 	return TEEC_ERROR_BAD_PARAMETERS;
 }
 
-static bool mitee_dynamic_mem_reclaim_all(void)
+static unsigned int mitee_dynamic_mem_reclaim_all(struct optee *optee)
 {
 	struct ffa_device *ffa_dev = READ_ONCE(mitee_ffa_ctx.ffa_dev);
-	const struct ffa_mem_ops *mem_ops;
+	const struct ffa_mem_ops *mem_ops = NULL;
+	unsigned int initial_count;
+	unsigned int i;
 	struct mem_desc *desc;
 
-	if (!ffa_dev || !ffa_dev->ops || !ffa_dev->ops->mem_ops) {
-		desc = mitee_dynamic_mem_take_first();
-		if (!desc)
-			return true;
-		pr_crit("dynamic FF-A LEND reclaim incomplete: transport unavailable, retaining handle 0x%llx\n",
-			desc->global_id);
-		mitee_dynamic_mem_restore_node(desc);
-		return false;
-	}
-	mem_ops = ffa_dev->ops->mem_ops;
-	while ((desc = mitee_dynamic_mem_take_first())) {
+	if (ffa_dev && ffa_dev->ops)
+		mem_ops = ffa_dev->ops->mem_ops;
+
+	initial_count = mitee_dynamic_mem_count(&optee->dynamic_mem);
+	for (i = 0; i < initial_count; i++) {
+		desc = mitee_dynamic_mem_take_first(&optee->dynamic_mem);
+		if (WARN_ON(!desc))
+			break;
+		if (!mem_ops) {
+			pr_crit("dynamic FF-A LEND reclaim incomplete: transport unavailable, retaining handle 0x%llx\n",
+				desc->global_id);
+			mitee_dynamic_mem_restore(&optee->dynamic_mem, desc);
+			continue;
+		}
 		if (mem_ops->memory_reclaim(desc->global_id, 0)) {
 			pr_crit("dynamic FF-A LEND reclaim incomplete: retaining handle 0x%llx\n",
 				desc->global_id);
-			mitee_dynamic_mem_restore_node(desc);
-			return false;
+			mitee_dynamic_mem_restore(&optee->dynamic_mem, desc);
+			continue;
 		}
 		mitee_free_memory_sgt(desc->mem_size, desc->sgt);
 		kfree(desc);
 	}
-	return true;
+	return mitee_dynamic_mem_count(&optee->dynamic_mem);
 }
 
 void mitee_lifecycle_init(struct optee *optee)
@@ -1118,7 +1128,7 @@ void mitee_lifecycle_uninit(struct optee *optee)
 int mitee_lifecycle_shutdown(struct optee *optee,
 			     enum mitee_shutdown_mode mode)
 {
-	bool dynamic_mem_reclaimed;
+	unsigned int retained;
 	long drained;
 	int rc = 0;
 
@@ -1158,11 +1168,13 @@ int mitee_lifecycle_shutdown(struct optee *optee,
 	}
 
 	mitee_workers_deinit(optee);
-	dynamic_mem_reclaimed = mitee_dynamic_mem_reclaim_all();
-	if (!dynamic_mem_reclaimed)
-		pr_err("dynamic FF-A LEND handles remain retained after lifecycle reclaim\n");
+	retained = mitee_dynamic_mem_reclaim_all(optee);
 	WRITE_ONCE(optee->lifecycle_state, MITEE_LIFECYCLE_STOPPED);
-	pr_info("local lifecycle stopped\n");
+	if (retained)
+		pr_err("local lifecycle stopped with %u dynamic FF-A LEND handles retained\n",
+		       retained);
+	else
+		pr_info("local lifecycle stopped\n");
 out:
 	mutex_unlock(&optee->lifecycle_lock);
 	return rc;
@@ -1231,7 +1243,7 @@ static int __init mitee_core_init(void)
 	optee->active_calls = 0;
 	mitee_lifecycle_init(optee);
 	ATOMIC_INIT_NOTIFIER_HEAD(&optee->notifier);
-	mitee_dynamic_mem_init();
+	mitee_dynamic_mem_init(&optee->dynamic_mem);
 
 	rc = optee->comm_ops->register_abi();
 	if (rc) {
@@ -1413,7 +1425,7 @@ err_shutdown:
 	}
 	optee_svc = NULL;
 	mitee_rpc_callback_queue_deinit(&optee->cb_queue);
-	mitee_dynamic_mem_deinit();
+	mitee_dynamic_mem_deinit(&optee->dynamic_mem);
 	optee_supp_release(&optee->supp);
 	optee_supp_uninit(&optee->supp);
 	optee_wait_queue_exit(&optee->wait_queue);
@@ -1561,7 +1573,7 @@ static void __exit mitee_core_exit(void)
 	optee->mitee_memlog_pdev = NULL;
 	optee_bm_disable();
 	mitee_rpc_callback_queue_deinit(&optee->cb_queue);
-	mitee_dynamic_mem_deinit();
+	mitee_dynamic_mem_deinit(&optee->dynamic_mem);
 	optee_supp_release(&optee->supp);
 	optee_supp_uninit(&optee->supp);
 	optee_wait_queue_exit(&optee->wait_queue);

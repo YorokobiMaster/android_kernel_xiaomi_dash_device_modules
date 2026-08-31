@@ -15,6 +15,7 @@
 #include <linux/types.h>
 
 #include <tee_drv.h>
+#include "dynamic_mem.h"
 #include "mitee_task.h"
 #include "optee_msg.h"
 
@@ -191,6 +192,7 @@ struct optee {
 	struct optee_call_queue call_queue;
 	struct optee_wait_queue wait_queue;
 	struct mitee_rpc_callback_queue cb_queue;
+	struct mitee_dynamic_mem_queue dynamic_mem;
 	struct optee_supp supp;
 	struct tee_shm_pool *pool;
 	unsigned int rpc_arg_count;

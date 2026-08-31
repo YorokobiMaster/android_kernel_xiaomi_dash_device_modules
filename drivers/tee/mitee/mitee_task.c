@@ -36,6 +36,7 @@
 #include "optee_msg.h"
 #include "optee_private.h"
 #include "optee_rpc_cmd.h"
+#include "rpc_callback.h"
 
 static_assert(sizeof(struct mitee_msg_ring) == 0x18);
 static_assert(sizeof(struct mitee_msg) == MITEE_MSG_SLOT_SIZE);
@@ -413,6 +414,21 @@ static void handle_rpc(struct tee_context *ctx, struct optee_msg_arg *arg)
 	}
 }
 
+static bool mitee_is_dynamic_mem_rpc(const struct optee_msg_arg *arg)
+{
+	u64 sub_cmd;
+
+	if (arg->cmd != OPTEE_MSG_RPC_CMD_CALLBACK || !arg->num_params)
+		return false;
+	if ((u32)arg->params[0].u.value.b !=
+	    REE_CALLBACK_MODULE_TEE_FRAMEWORK)
+		return false;
+
+	sub_cmd = arg->params[0].u.value.a;
+	return sub_cmd == OPTEE_REE_CALLBACK_ALLOCATE_NONSECMEM ||
+	       sub_cmd == OPTEE_REE_CALLBACK_FREE_NONSECMEM;
+}
+
 static bool supp_ready(struct optee *optee)
 {
 	return READ_ONCE(optee->supp.ctx) || mitee_lifecycle_is_shutting_down(optee);
@@ -518,18 +534,22 @@ int mitee_worker_fn(void *data)
 			response_task_id = msg.task_id;
 
 			if (msg.command == MITEE_MSG_CMD_RPC) {
-				for (;;) {
-					rc = wait_event_interruptible(*supp_wq, supp_ready(optee));
-					if (rc || mitee_lifecycle_is_shutting_down(optee)) {
-						rc = rc ?: -ESHUTDOWN;
-						goto task_error;
+				if (mitee_is_dynamic_mem_rpc(arg)) {
+					handle_rpc(task->ctx, arg);
+				} else {
+					for (;;) {
+						rc = wait_event_interruptible(*supp_wq, supp_ready(optee));
+						if (rc || mitee_lifecycle_is_shutting_down(optee)) {
+							rc = rc ?: -ESHUTDOWN;
+							goto task_error;
+						}
+						rpc_ctx = optee_supp_get_ctx(&optee->supp);
+						if (rpc_ctx)
+							break;
 					}
-					rpc_ctx = optee_supp_get_ctx(&optee->supp);
-					if (rpc_ctx)
-						break;
+					handle_rpc(rpc_ctx, arg);
+					optee_supp_put_ctx(&optee->supp);
 				}
-				handle_rpc(rpc_ctx, arg);
-				optee_supp_put_ctx(&optee->supp);
 				rc = mitee_msg_pack(&reply, response_task_id,
 						    MITEE_MSG_CMD_RPC_REPLY, arg);
 				if (rc)

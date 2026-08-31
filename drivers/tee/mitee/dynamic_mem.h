@@ -16,8 +16,10 @@
 #ifndef __DYNAMIC_MEM_H
 #define __DYNAMIC_MEM_H
 
-#include <linux/types.h>
+#include <linux/list.h>
+#include <linux/mutex.h>
 #include <linux/scatterlist.h>
+#include <linux/types.h>
 
 struct mem_desc {
 	struct sg_table *sgt;
@@ -31,10 +33,15 @@ struct mitee_dynamic_mem_queue {
 	struct mutex mem_mut;
 };
 
-int mitee_dynamic_mem_add_node(uint64_t mem_handle, struct sg_table *sgt, uint32_t size);
-struct mem_desc *mitee_dynamic_mem_take_node(uint64_t mem_handle);
-struct mem_desc *mitee_dynamic_mem_take_first(void);
-void mitee_dynamic_mem_restore_node(struct mem_desc *desc);
+void mitee_dynamic_mem_add(struct mitee_dynamic_mem_queue *queue,
+			   struct mem_desc *desc);
+struct mem_desc *mitee_dynamic_mem_take(struct mitee_dynamic_mem_queue *queue,
+					uint64_t mem_handle);
+struct mem_desc *mitee_dynamic_mem_take_first(
+				struct mitee_dynamic_mem_queue *queue);
+void mitee_dynamic_mem_restore(struct mitee_dynamic_mem_queue *queue,
+			       struct mem_desc *desc);
+unsigned int mitee_dynamic_mem_count(struct mitee_dynamic_mem_queue *queue);
 
 /* mem_size: [in] target memory size going to free
  * sgt: target memory assigned in sg_table to free
@@ -48,11 +55,8 @@ void mitee_free_memory_sgt(uint32_t mem_size, struct sg_table *sgt);
  */
 int mitee_alloc_memory_sgt(uint32_t mem_size, struct sg_table **out_sgt);
 
-void mitee_dynamic_mem_init(void);
-void mitee_dynamic_mem_deinit(void);
-int mitee_dynamic_mem_free_ffa(uint64_t mem_handle);
-int mitee_dynamic_mem_allocate_ffa(uint32_t mem_size, uint64_t *mem_handle,
-				   void *buf, uint32_t size_in,
-				   uint32_t *size_out);
+void mitee_dynamic_mem_init(struct mitee_dynamic_mem_queue *queue);
+unsigned int mitee_dynamic_mem_deinit(
+				struct mitee_dynamic_mem_queue *queue);
 
 #endif

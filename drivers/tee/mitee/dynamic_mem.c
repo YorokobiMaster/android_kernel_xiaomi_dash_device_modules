@@ -24,9 +24,6 @@
 #include <linux/mm_types.h>
 #include <linux/gfp.h>
 #include "dynamic_mem.h"
-#include "optee_private.h"
-
-static struct mitee_dynamic_mem_queue memory_queue;
 
 struct mitee_sgl_page {
 	struct page *pages;
@@ -43,35 +40,17 @@ struct mitee_page_fragment {
 	struct list_head page_node;
 };
 
-static struct mitee_dynamic_mem_queue *get_mitee_dynamic_mem_queue(void)
+void mitee_dynamic_mem_add(struct mitee_dynamic_mem_queue *queue,
+			   struct mem_desc *desc)
 {
-	return &memory_queue;
-}
-
-int mitee_dynamic_mem_add_node(uint64_t mem_handle, struct sg_table *sgt, uint32_t size)
-{
-	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
-	struct mem_desc *desc = NULL;
-
-	desc = kmalloc(sizeof(*desc), GFP_KERNEL);
-	if (!desc) {
-		pr_err("mitee dynamic mem: failed to alloc memory for new dynamic node\n");
-		return -ENOMEM;
-	}
-
-	desc->sgt = sgt;
-	desc->global_id = mem_handle;
-	desc->mem_size = size;
 	mutex_lock(&queue->mem_mut);
 	list_add_tail(&desc->node, &queue->mem_node);
 	mutex_unlock(&queue->mem_mut);
-
-	return 0;
 }
 
-struct mem_desc *mitee_dynamic_mem_take_node(uint64_t mem_handle)
+struct mem_desc *mitee_dynamic_mem_take(struct mitee_dynamic_mem_queue *queue,
+					uint64_t mem_handle)
 {
-	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
 	struct mem_desc *desc;
 	struct mem_desc *found = NULL;
 
@@ -90,9 +69,9 @@ struct mem_desc *mitee_dynamic_mem_take_node(uint64_t mem_handle)
 	return found;
 }
 
-struct mem_desc *mitee_dynamic_mem_take_first(void)
+struct mem_desc *mitee_dynamic_mem_take_first(
+				struct mitee_dynamic_mem_queue *queue)
 {
-	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
 	struct mem_desc *desc = NULL;
 
 	mutex_lock(&queue->mem_mut);
@@ -104,13 +83,25 @@ struct mem_desc *mitee_dynamic_mem_take_first(void)
 	return desc;
 }
 
-void mitee_dynamic_mem_restore_node(struct mem_desc *desc)
+void mitee_dynamic_mem_restore(struct mitee_dynamic_mem_queue *queue,
+			       struct mem_desc *desc)
 {
-	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
-
 	mutex_lock(&queue->mem_mut);
 	list_add_tail(&desc->node, &queue->mem_node);
 	mutex_unlock(&queue->mem_mut);
+}
+
+unsigned int mitee_dynamic_mem_count(struct mitee_dynamic_mem_queue *queue)
+{
+	struct mem_desc *desc;
+	unsigned int count = 0;
+
+	mutex_lock(&queue->mem_mut);
+	list_for_each_entry(desc, &queue->mem_node, node)
+		count++;
+	mutex_unlock(&queue->mem_mut);
+
+	return count;
 }
 
 void mitee_free_memory_sgt(uint32_t mem_size, struct sg_table *sgt) {
@@ -214,16 +205,20 @@ out_free:
 	return rc;
 }
 
-void mitee_dynamic_mem_init(void)
+void mitee_dynamic_mem_init(struct mitee_dynamic_mem_queue *queue)
 {
-	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
 	mutex_init(&queue->mem_mut);
 	INIT_LIST_HEAD(&queue->mem_node);
 }
 
-void mitee_dynamic_mem_deinit(void)
+unsigned int mitee_dynamic_mem_deinit(
+				struct mitee_dynamic_mem_queue *queue)
 {
-	struct mitee_dynamic_mem_queue *queue = get_mitee_dynamic_mem_queue();
+	unsigned int retained = mitee_dynamic_mem_count(queue);
 
-	WARN_ON(!list_empty(&queue->mem_node));
+	if (retained)
+		pr_err("mitee dynamic mem: deinitializing with %u retained descriptors\n",
+		       retained);
+	mutex_destroy(&queue->mem_mut);
+	return retained;
 }
