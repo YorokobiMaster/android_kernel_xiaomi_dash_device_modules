@@ -75,6 +75,14 @@ struct mitee_msg_buf {
 	struct mitee_msg *messages;
 };
 
+enum mitee_msg_queue_state {
+	MITEE_MSG_QUEUE_EMPTY,
+	MITEE_MSG_QUEUE_LOCAL,
+	MITEE_MSG_QUEUE_PUBLISHED,
+	MITEE_MSG_QUEUE_REVOKED,
+	MITEE_MSG_QUEUE_RETAINED,
+};
+
 struct mitee_msg_queue {
 	phys_addr_t pa;
 	u32 size;
@@ -82,6 +90,9 @@ struct mitee_msg_queue {
 	void *va;
 	struct mitee_msg_buf tx;
 	struct mitee_msg_buf rx;
+	/* Serializes ownership state transitions. */
+	struct mutex state_lock;
+	enum mitee_msg_queue_state state;
 };
 
 struct mitee_task {
@@ -110,7 +121,8 @@ struct mitee_worker {
 };
 
 int mitee_msg_queue_init(struct mitee_msg_queue *queue);
-void mitee_msg_queue_deinit(struct mitee_msg_queue *queue);
+void mitee_msg_queue_deinit(struct mitee_msg_queue *queue,
+			    const char *reason);
 int mitee_msg_queue_register(struct optee *optee);
 
 void mitee_task_list_init(struct mitee_task_list *tasks);

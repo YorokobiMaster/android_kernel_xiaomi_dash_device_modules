@@ -43,6 +43,24 @@ static_assert(sizeof(struct mitee_msg) == MITEE_MSG_SLOT_SIZE);
 static_assert(offsetof(struct mitee_msg, payload) == 0x14);
 static_assert(offsetof(struct mitee_msg, timestamp) == 0xf4);
 
+static const char *mitee_msg_queue_state_name(enum mitee_msg_queue_state state)
+{
+	switch (state) {
+	case MITEE_MSG_QUEUE_EMPTY:
+		return "empty";
+	case MITEE_MSG_QUEUE_LOCAL:
+		return "local";
+	case MITEE_MSG_QUEUE_PUBLISHED:
+		return "published";
+	case MITEE_MSG_QUEUE_REVOKED:
+		return "revoked";
+	case MITEE_MSG_QUEUE_RETAINED:
+		return "retained";
+	default:
+		return "invalid";
+	}
+}
+
 static int mitee_msg_enqueue(struct mitee_msg_queue *queue,
 			     const struct mitee_msg *msg)
 {
@@ -119,6 +137,8 @@ int mitee_msg_queue_init(struct mitee_msg_queue *queue)
 		return -EINVAL;
 	}
 
+	mutex_init(&queue->state_lock);
+	queue->state = MITEE_MSG_QUEUE_EMPTY;
 	va = alloc_pages_exact(MITEE_MSG_QUEUE_SIZE, GFP_KERNEL | __GFP_ZERO);
 	if (!va) {
 		pr_err("failed to allocate message queue\n");
@@ -139,40 +159,78 @@ int mitee_msg_queue_init(struct mitee_msg_queue *queue)
 	queue->tx.ring = va + 0x800;
 	queue->tx.messages = va + 0x2000;
 	queue->tx.ring->capacity = MITEE_MSG_SLOT_COUNT;
+	queue->state = MITEE_MSG_QUEUE_LOCAL;
 
 	pr_info("allocated message queue pa: %#llx va: %p\n",
 		(unsigned long long)queue->pa, va);
 	return 0;
 }
 
-void mitee_msg_queue_deinit(struct mitee_msg_queue *queue)
+void mitee_msg_queue_deinit(struct mitee_msg_queue *queue, const char *reason)
 {
-	if (!queue || !queue->va)
+	if (!queue)
 		return;
+
+	mutex_lock(&queue->state_lock);
+	if (queue->state == MITEE_MSG_QUEUE_PUBLISHED) {
+		queue->state = MITEE_MSG_QUEUE_RETAINED;
+		pr_crit("retaining message queue pa: %#llx va: %p size: %#x state: %s reason: %s\n",
+			(unsigned long long)queue->pa, queue->va, queue->size,
+			mitee_msg_queue_state_name(queue->state), reason);
+		goto out;
+	}
+	if (queue->state == MITEE_MSG_QUEUE_EMPTY ||
+	    queue->state == MITEE_MSG_QUEUE_RETAINED)
+		goto out;
+	if (WARN_ON(queue->state != MITEE_MSG_QUEUE_LOCAL &&
+		    queue->state != MITEE_MSG_QUEUE_REVOKED))
+		goto out;
 
 	free_pages_exact(queue->va, queue->size);
 	queue->va = NULL;
 	queue->pa = 0;
+	queue->size = 0;
+	queue->buf_size = 0;
+	queue->tx.ring = NULL;
+	queue->tx.messages = NULL;
+	queue->rx.ring = NULL;
+	queue->rx.messages = NULL;
+	queue->state = MITEE_MSG_QUEUE_EMPTY;
 	pr_info("message queue destroyed\n");
+out:
+	mutex_unlock(&queue->state_lock);
 }
 
 int mitee_msg_queue_register(struct optee *optee)
 {
-	struct ffa_send_direct_data data = {
-		.data0 = MITEE_FFA_MSG_QUEUE_REGISTER,
-		.data1 = optee->msg_queue.pa,
-		.data2 = optee->msg_queue.size,
-	};
+	struct mitee_msg_queue *queue;
+	struct ffa_send_direct_data data = {};
 	int rc;
 
-	if (!optee || !optee->msg_queue.va) {
+	if (!optee) {
 		pr_err("driver state is NULL\n");
 		return -EINVAL;
 	}
+	queue = &optee->msg_queue;
+
+	mutex_lock(&queue->state_lock);
+	if (!queue->va || queue->state != MITEE_MSG_QUEUE_LOCAL) {
+		pr_err("invalid message queue state: %s\n",
+		       mitee_msg_queue_state_name(queue->state));
+		rc = -EINVAL;
+		goto out;
+	}
+	data.data0 = MITEE_FFA_MSG_QUEUE_REGISTER;
+	data.data1 = queue->pa;
+	data.data2 = queue->size;
 
 	rc = optee->comm_ops->call(&data);
 	if (rc)
 		pr_err("failed to register message queue: %d\n", rc);
+	else
+		queue->state = MITEE_MSG_QUEUE_PUBLISHED;
+out:
+	mutex_unlock(&queue->state_lock);
 	return rc;
 }
 

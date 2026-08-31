@@ -1730,7 +1730,8 @@ err_shutdown:
 	if (tasks_ready)
 		mitee_task_list_deinit(&optee->tasks);
 	if (queue_ready)
-		mitee_msg_queue_deinit(&optee->msg_queue);
+		mitee_msg_queue_deinit(&optee->msg_queue,
+				       "initialization unwind");
 	if (memlog_ready)
 		mitee_memlog_remove(optee->mitee_memlog_pdev);
 	if (memlog_added) {
@@ -1884,7 +1885,7 @@ static void __exit mitee_core_exit(void)
 	tee_device_unregister(optee->supp_teedev);
 	mitee_ffa_share_reclaim_final(optee);
 	mitee_task_list_deinit(&optee->tasks);
-	mitee_msg_queue_deinit(&optee->msg_queue);
+	mitee_msg_queue_deinit(&optee->msg_queue, "module exit");
 	mitee_memlog_remove(optee->mitee_memlog_pdev);
 	platform_device_unregister(optee->mitee_memlog_pdev);
 	optee->mitee_memlog_pdev = NULL;
