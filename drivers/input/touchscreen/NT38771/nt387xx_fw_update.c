@@ -796,6 +796,14 @@ retry_update_firmware:
 	NVT_LOG("Update firmware success! <%ld us>\n",
 			(long) ktime_us_delta(end, start));
 
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	ret = nvt_get_xm_htc_poll_info();
+	if (ret) {
+		NVT_ERR("nvt_get_xm_htc_poll_info failed. (%d)\n", ret);
+		goto download_fail;
+	}
+#endif
+
 	/* Get FW Info */
 	ret = nvt_get_fw_info();
 	if (ret) {

@@ -24,6 +24,7 @@ typedef struct nvt_ts_reg {
 
 struct nvt_ts_mem_map {
 	uint32_t EVENT_BUF_ADDR;
+	uint32_t XBUF_SECTOR_ADDR;
 	uint32_t RAW_PIPE0_ADDR;
 	uint32_t RAW_PIPE1_ADDR;
 	uint32_t BASELINE_ADDR;
@@ -124,6 +125,7 @@ static const struct nvt_ts_hw_reg_addr_info hw_reg_addr_info_old_spe2 = {
 /* tddi */
 static const struct nvt_ts_mem_map NT38771_memory_map = {
 	.EVENT_BUF_ADDR               = 0x31400,
+	.XBUF_SECTOR_ADDR             = 0x25B40,
 	.RAW_PIPE0_ADDR               = 0x2EEC8,
 	.RAW_PIPE1_ADDR               = 0x2EEC8,
 	.BASELINE_ADDR                = 0x304A8,

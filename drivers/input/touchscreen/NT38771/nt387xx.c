@@ -65,7 +65,7 @@ extern void nvt_ts_display_esd_flag(bool *esd_flag);
 /*P16 code for HQFEAT-94426 by liuyupei at 2025/5/6 start*/
 #define NVT_VENDOR_TOUCH_IC '4'
 #define NVT_THP_DATA_LEN 0x1EFE
-#define NVT_THP_SPI_READ_LEN (NVT_THP_DATA_LEN + 0x101)
+#define NVT_THP_HEADER_LEN 0x101
 #define NVT_THP_FRAME_BUF_LEN 0x2000
 char hex_str[3];
 /*P16 code for HQFEAT-94426 by liuyupei at 2025/5/6 end*/
@@ -2319,14 +2319,50 @@ static bool nvt_thp_frame_is_valid(const u8 *data)
 		get_unaligned_le16(data + 0x101) == 0xFFFF;
 }
 
+int32_t nvt_get_xm_htc_poll_info(void)
+{
+	u8 poll_info[40] = { 0 };
+	u16 data_len;
+	int ret;
+
+	ret = nvt_set_page(ts->mmap->XBUF_SECTOR_ADDR);
+	if (ret < 0)
+		return ret;
+
+	poll_info[0] = ts->mmap->XBUF_SECTOR_ADDR & 0x7F;
+	ret = CTP_SPI_READ(ts->client, poll_info, sizeof(poll_info));
+	if (ret < 0)
+		goto restore_event_page;
+
+	data_len = get_unaligned_le16(poll_info + 3);
+	if (data_len > NVT_THP_DATA_LEN) {
+		NVT_ERR("IC xbuf length %u exceeds %u, clamp it\n",
+			data_len, NVT_THP_DATA_LEN);
+		data_len = NVT_THP_DATA_LEN;
+	}
+	ts->thp_data_len = data_len;
+	NVT_LOG("IC xbuf length = %u, SPI read length = %u\n",
+		 ts->thp_data_len, ts->thp_data_len + NVT_THP_HEADER_LEN);
+
+restore_event_page:
+	if (nvt_set_page(ts->mmap->EVENT_BUF_ADDR) < 0 && !ret)
+		ret = -EIO;
+
+	return ret;
+}
+
 static int nvt_report_thp_frame(void)
 {
 	struct nvt_thp_frame *frame;
+	u16 data_len = ts->thp_data_len;
 	int ret;
+
+	if (!data_len)
+		data_len = NVT_THP_DATA_LEN;
 
 	memset(ts->thp_frame_buf, 0, NVT_THP_FRAME_BUF_LEN);
 	ret = CTP_SPI_READ(ts->client, ts->thp_frame_buf,
-			   NVT_THP_SPI_READ_LEN);
+			   data_len + NVT_THP_HEADER_LEN);
 	if (ret < 0)
 		return ret;
 
@@ -3945,6 +3981,7 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		ret = -ENOMEM;
 		goto err_malloc_thp_frame_buf;
 	}
+	ts->thp_data_len = NVT_THP_DATA_LEN;
 
 #if NVT_PM_WAIT_BUS_RESUME_COMPLETE
 	ts->dev_pm_suspend = false;
