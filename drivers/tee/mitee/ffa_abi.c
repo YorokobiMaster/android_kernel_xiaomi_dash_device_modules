@@ -86,7 +86,19 @@ struct mitee_ffa_share {
 
 static void rh_free_fn(void *ptr, void *arg)
 {
-	kfree(ptr);
+	struct mitee_ffa_share *share = ptr;
+	bool retained_linked = !list_empty(&share->retained_node);
+
+	if (share->state == MITEE_FFA_SHARE_RELEASED && !retained_linked) {
+		kfree(share);
+		return;
+	}
+
+	pr_crit("preserving FF-A SHARE ownership record for handle 0x%llx at transport removal: "
+		"state=%d active_linked=%d registered_pages=%d "
+		"pool_backing=%d retained_linked=%d\n",
+		share->global_id, share->state, share->active_linked,
+		!!share->pages, !!share->pool_kaddr, retained_linked);
 }
 
 static const struct rhashtable_params shm_rhash_params = {
@@ -95,6 +107,37 @@ static const struct rhashtable_params shm_rhash_params = {
 	.key_offset = offsetof(struct mitee_ffa_share, global_id),
 	.automatic_shrinking = true,
 };
+
+static void mitee_ffa_share_report_active_map(void)
+{
+	struct mitee_ffa_share *share;
+	struct rhashtable_iter iter;
+	bool non_released = false;
+
+	mutex_lock(&mitee_ffa_ctx.mutex);
+	rhashtable_walk_enter(&mitee_ffa_ctx.global_ids, &iter);
+	rhashtable_walk_start(&iter);
+	while ((share = rhashtable_walk_next(&iter)) && !IS_ERR(share)) {
+		if (share->state != MITEE_FFA_SHARE_RELEASED) {
+			non_released = true;
+			break;
+		}
+	}
+	rhashtable_walk_stop(&iter);
+	rhashtable_walk_exit(&iter);
+	mutex_unlock(&mitee_ffa_ctx.mutex);
+
+	if (non_released)
+		pr_crit("FF-A active map contains non-released SHARE ownership "
+			"before transport unregister\n");
+	else if (IS_ERR(share))
+		pr_crit("failed to inspect FF-A SHARE active map before "
+			"transport unregister: %ld\n",
+			PTR_ERR(share));
+	else
+		pr_info("FF-A active map contains no non-released SHARE ownership "
+			"before transport unregister\n");
+}
 
 static struct tee_shm *optee_shm_from_ffa_handle(struct optee *optee,
 						 u64 global_id)
@@ -280,8 +323,12 @@ static void mitee_ffa_share_finish_reclaim(struct optee *optee,
 
 	share = optee_shm_take_ffa_share(optee, global_handle);
 	shm->sec_world_id = 0;
-	if (WARN_ON(!share))
+	if (!share) {
+		pr_crit("missing FF-A SHARE ownership record for handle 0x%llx: "
+			"reclaim=%d pages_present=%d pool_backing_present=%d\n",
+			global_handle, reclaim_rc, !!shm->pages, !!shm->kaddr);
 		return;
+	}
 
 	if (reclaim_rc) {
 		mitee_ffa_share_transfer_pages(optee, share, shm);
@@ -1367,6 +1414,18 @@ static unsigned int mitee_ffa_share_reclaim_retained(struct optee *optee)
 	return mitee_ffa_share_retained_count(optee);
 }
 
+static void mitee_ffa_share_reclaim_final(struct optee *optee)
+{
+	unsigned int retained;
+
+	retained = mitee_ffa_share_reclaim_retained(optee);
+	if (retained)
+		pr_crit("final strict teardown retained %u ordinary FF-A SHARE handles\n",
+			retained);
+	else
+		pr_info("final strict teardown retained 0 ordinary FF-A SHARE handles\n");
+}
+
 void mitee_lifecycle_init(struct optee *optee)
 {
 	mutex_init(&optee->lifecycle_lock);
@@ -1458,8 +1517,6 @@ static int __init mitee_core_init(void)
 	struct tee_device *teedev = NULL;
 	struct optee *optee = NULL;
 	void *memremaped_shm = NULL;
-	bool client_registered = false;
-	bool supp_registered = false;
 	bool ffa_registered = false;
 	bool memlog_added = false;
 	bool memlog_ready = false;
@@ -1630,11 +1687,9 @@ static int __init mitee_core_init(void)
 	rc = tee_device_register(optee->teedev);
 	if (rc)
 		goto err_shutdown;
-	client_registered = true;
 	rc = tee_device_register(optee->supp_teedev);
 	if (rc)
 		goto err_shutdown;
-	supp_registered = true;
 
 	#if MITEE_FEATURE_FW_NP_ENABLE
 	rc = optee_enumerate_devices(PTA_CMD_GET_DEVICES);
@@ -1665,10 +1720,11 @@ err_shutdown:
 	#if MITEE_FEATURE_FW_NP_ENABLE
 	optee_unregister_devices();
 	#endif
-	if (client_registered)
-		tee_device_unregister(optee->teedev);
-	if (supp_registered)
-		tee_device_unregister(optee->supp_teedev);
+	tee_device_unregister(optee->teedev);
+	tee_device_unregister(optee->supp_teedev);
+	optee->teedev = NULL;
+	optee->supp_teedev = NULL;
+	mitee_ffa_share_reclaim_final(optee);
 	if (proc_ready)
 		mitee_proc_deinit(optee);
 	if (tasks_ready)
@@ -1692,10 +1748,6 @@ err_shutdown:
 	optee_supp_uninit(&optee->supp);
 	optee_wait_queue_exit(&optee->wait_queue);
 	mutex_destroy(&optee->call_queue.mutex);
-	if (optee->supp_teedev && !supp_registered)
-		tee_device_unregister(optee->supp_teedev);
-	if (optee->teedev && !client_registered)
-		tee_device_unregister(optee->teedev);
 	if (optee->pool)
 		tee_shm_pool_free(optee->pool);
 	if (memremaped_shm)
@@ -1794,8 +1846,10 @@ int mitee_ffa_register(void)
 
 void mitee_ffa_unregister(void)
 {
-	if (IS_REACHABLE(CONFIG_ARM_FFA_TRANSPORT))
+	if (IS_REACHABLE(CONFIG_ARM_FFA_TRANSPORT)) {
+		mitee_ffa_share_report_active_map();
 		ffa_unregister(&mitee_ffa_driver);
+	}
 }
 
 const struct mitee_comm_ops mitee_ffa_comm_ops = {
@@ -1828,6 +1882,7 @@ static void __exit mitee_core_exit(void)
 	#endif
 	tee_device_unregister(optee->teedev);
 	tee_device_unregister(optee->supp_teedev);
+	mitee_ffa_share_reclaim_final(optee);
 	mitee_task_list_deinit(&optee->tasks);
 	mitee_msg_queue_deinit(&optee->msg_queue);
 	mitee_memlog_remove(optee->mitee_memlog_pdev);
