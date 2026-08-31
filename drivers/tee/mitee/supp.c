@@ -49,14 +49,11 @@ void optee_supp_uninit(struct optee_supp *supp)
 	idr_destroy(&supp->idr);
 }
 
-void optee_supp_shutdown(struct optee *optee)
+static void optee_supp_abort_locked(struct optee_supp *supp)
 {
-	struct optee_supp *supp = &optee->supp;
 	int id;
 	struct optee_supp_req *req;
 	struct optee_supp_req *req_tmp;
-
-	mutex_lock(&supp->mutex);
 
 	/* Abort all request retrieved by supplicant */
 	idr_for_each_entry (&supp->idr, req, id) {
@@ -75,16 +72,23 @@ void optee_supp_shutdown(struct optee *optee)
 
 	supp->ctx = NULL;
 	supp->req_id = -1;
-	complete(&supp->reqs_c);
+}
 
+void optee_supp_shutdown(struct optee *optee)
+{
+	struct optee_supp *supp = &optee->supp;
+
+	mutex_lock(&supp->mutex);
+	optee_supp_abort_locked(supp);
+	complete_all(&supp->reqs_c);
 	mutex_unlock(&supp->mutex);
 }
 
 void optee_supp_release(struct optee_supp *supp)
 {
-	struct optee *optee = container_of(supp, struct optee, supp);
-
-	optee_supp_shutdown(optee);
+	mutex_lock(&supp->mutex);
+	optee_supp_abort_locked(supp);
+	mutex_unlock(&supp->mutex);
 	wait_event(supp->refs_wq, !READ_ONCE(supp->refs));
 }
 
@@ -305,17 +309,19 @@ int optee_supp_recv(struct tee_context *ctx, u32 *func, u32 *num_params,
 			return -ESHUTDOWN;
 		}
 		req = supp_pop_entry(supp, *num_params - num_meta, &id);
-		mutex_unlock(&supp->mutex);
 
 		if (DEBUG_SUPP)
 			pr_err("pop entry\n");
 		if (req) {
-			if (IS_ERR(req))
+			if (IS_ERR(req)) {
+				mutex_unlock(&supp->mutex);
 				return PTR_ERR(req);
+			}
 			if (DEBUG_SUPP)
 				pr_err("found entry, back to userspace\n");
 			break;
 		}
+		mutex_unlock(&supp->mutex);
 
 		/*
 		 * If we didn't get a request we'll block in
@@ -342,15 +348,14 @@ int optee_supp_recv(struct tee_context *ctx, u32 *func, u32 *num_params,
 		param->u.value.b = 0;
 		param->u.value.c = 0;
 	} else {
-		mutex_lock(&supp->mutex);
 		supp->req_id = id;
-		mutex_unlock(&supp->mutex);
 	}
 
 	*func = req->func;
 	*num_params = req->num_params + num_meta;
 	memcpy(param + num_meta, req->param,
 	       sizeof(struct tee_param) * req->num_params);
+	mutex_unlock(&supp->mutex);
 
 	return 0;
 }

@@ -120,6 +120,11 @@ enum mitee_lifecycle_state {
 	MITEE_LIFECYCLE_STOPPED,
 };
 
+enum mitee_shutdown_mode {
+	MITEE_SHUTDOWN_REBOOT_BOUNDED = 0,
+	MITEE_SHUTDOWN_TEARDOWN_STRICT,
+};
+
 struct mitee_comm_ops {
 	enum mitee_comm_type type;
 	int (*register_abi)(void);
@@ -225,7 +230,8 @@ static inline bool mitee_lifecycle_is_shutting_down_locked(const struct optee *o
 
 void mitee_lifecycle_init(struct optee *optee);
 void mitee_lifecycle_uninit(struct optee *optee);
-int mitee_lifecycle_shutdown(struct optee *optee);
+int mitee_lifecycle_shutdown(struct optee *optee,
+			     enum mitee_shutdown_mode mode);
 
 struct optee_session {
 	struct list_head list_node;

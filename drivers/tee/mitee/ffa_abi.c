@@ -1072,25 +1072,33 @@ bad:
 	return TEEC_ERROR_BAD_PARAMETERS;
 }
 
-static void mitee_dynamic_mem_reclaim_all(void)
+static bool mitee_dynamic_mem_reclaim_all(void)
 {
 	struct ffa_device *ffa_dev = READ_ONCE(mitee_ffa_ctx.ffa_dev);
 	const struct ffa_mem_ops *mem_ops;
 	struct mem_desc *desc;
 
-	if (!ffa_dev || !ffa_dev->ops || !ffa_dev->ops->mem_ops)
-		return;
+	if (!ffa_dev || !ffa_dev->ops || !ffa_dev->ops->mem_ops) {
+		desc = mitee_dynamic_mem_take_first();
+		if (!desc)
+			return true;
+		pr_crit("dynamic FF-A LEND reclaim incomplete: transport unavailable, retaining handle 0x%llx\n",
+			desc->global_id);
+		mitee_dynamic_mem_restore_node(desc);
+		return false;
+	}
 	mem_ops = ffa_dev->ops->mem_ops;
 	while ((desc = mitee_dynamic_mem_take_first())) {
 		if (mem_ops->memory_reclaim(desc->global_id, 0)) {
-			pr_crit("retaining dynamic memory 0x%llx after reclaim failure\n",
+			pr_crit("dynamic FF-A LEND reclaim incomplete: retaining handle 0x%llx\n",
 				desc->global_id);
 			mitee_dynamic_mem_restore_node(desc);
-			break;
+			return false;
 		}
 		mitee_free_memory_sgt(desc->mem_size, desc->sgt);
 		kfree(desc);
 	}
+	return true;
 }
 
 void mitee_lifecycle_init(struct optee *optee)
@@ -1101,13 +1109,16 @@ void mitee_lifecycle_init(struct optee *optee)
 
 void mitee_lifecycle_uninit(struct optee *optee)
 {
-	WARN_ON(READ_ONCE(optee->lifecycle_state) !=
-		MITEE_LIFECYCLE_STOPPED);
+	if (WARN_ON(READ_ONCE(optee->lifecycle_state) !=
+		    MITEE_LIFECYCLE_STOPPED))
+		return;
 	mutex_destroy(&optee->lifecycle_lock);
 }
 
-int mitee_lifecycle_shutdown(struct optee *optee)
+int mitee_lifecycle_shutdown(struct optee *optee,
+			     enum mitee_shutdown_mode mode)
 {
+	bool dynamic_mem_reclaimed;
 	long drained;
 	int rc = 0;
 
@@ -1132,18 +1143,26 @@ int mitee_lifecycle_shutdown(struct optee *optee)
 					     !READ_ONCE(optee->active_calls),
 					     msecs_to_jiffies(5000));
 		if (!drained) {
-			pr_err("quiesce timed out with %u active calls\n",
+			if (mode == MITEE_SHUTDOWN_REBOOT_BOUNDED) {
+				pr_err("bounded reboot quiesce timed out with %u active calls\n",
+				       READ_ONCE(optee->active_calls));
+				rc = -ETIMEDOUT;
+				goto out;
+			}
+			pr_err("strict teardown quiesce timed out with %u active calls; waiting for drain\n",
 			       READ_ONCE(optee->active_calls));
-			rc = -ETIMEDOUT;
-			goto out;
+			wait_event(optee->concurrency_wq,
+				   !READ_ONCE(optee->active_calls));
 		}
 		WRITE_ONCE(optee->lifecycle_state, MITEE_LIFECYCLE_DRAINED);
 	}
 
 	mitee_workers_deinit(optee);
-	mitee_dynamic_mem_reclaim_all();
+	dynamic_mem_reclaimed = mitee_dynamic_mem_reclaim_all();
+	if (!dynamic_mem_reclaimed)
+		pr_err("dynamic FF-A LEND handles remain retained after lifecycle reclaim\n");
 	WRITE_ONCE(optee->lifecycle_state, MITEE_LIFECYCLE_STOPPED);
-	pr_info("lifecycle stopped\n");
+	pr_info("local lifecycle stopped\n");
 out:
 	mutex_unlock(&optee->lifecycle_lock);
 	return rc;
@@ -1154,7 +1173,8 @@ static int mitee_reboot_notify(struct notifier_block *nb,
 {
 	struct optee *optee = container_of(nb, struct optee, reboot_notifier);
 
-	if (mitee_lifecycle_shutdown(optee))
+	if (mitee_lifecycle_shutdown(optee,
+				     MITEE_SHUTDOWN_REBOOT_BOUNDED))
 		pr_err("reboot lifecycle shutdown incomplete\n");
 
 	return NOTIFY_DONE;
@@ -1368,8 +1388,7 @@ err_shutdown:
 		unregister_reboot_notifier(&optee->reboot_notifier);
 		optee->reboot_notifier_registered = false;
 	}
-	if (mitee_lifecycle_shutdown(optee))
-		pr_err("initialization unwind lifecycle shutdown incomplete\n");
+	mitee_lifecycle_shutdown(optee, MITEE_SHUTDOWN_TEARDOWN_STRICT);
 	#if MITEE_FEATURE_FW_NP_ENABLE
 	optee_unregister_devices();
 	#endif
@@ -1527,10 +1546,7 @@ static void __exit mitee_core_exit(void)
 		unregister_reboot_notifier(&optee->reboot_notifier);
 		optee->reboot_notifier_registered = false;
 	}
-	if (mitee_lifecycle_shutdown(optee)) {
-		pr_err("module-exit lifecycle shutdown incomplete\n");
-		return;
-	}
+	mitee_lifecycle_shutdown(optee, MITEE_SHUTDOWN_TEARDOWN_STRICT);
 
 	mitee_proc_deinit(optee);
 	#if MITEE_FEATURE_FW_NP_ENABLE
