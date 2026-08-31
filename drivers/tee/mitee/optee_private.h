@@ -73,6 +73,11 @@ struct mitee_rpc_callback_queue {
 	struct list_head item;
 };
 
+struct mitee_ffa_share_ledger {
+	struct mutex lock;
+	struct list_head retained;
+};
+
 /**
  * struct optee_supp - supplicant synchronization struct
  * @ctx			the context of current connected supplicant.
@@ -193,6 +198,7 @@ struct optee {
 	struct optee_wait_queue wait_queue;
 	struct mitee_rpc_callback_queue cb_queue;
 	struct mitee_dynamic_mem_queue dynamic_mem;
+	struct mitee_ffa_share_ledger retained_shares;
 	struct optee_supp supp;
 	struct tee_shm_pool *pool;
 	unsigned int rpc_arg_count;

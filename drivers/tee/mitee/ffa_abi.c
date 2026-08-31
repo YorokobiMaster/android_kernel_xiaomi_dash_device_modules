@@ -59,12 +59,29 @@ static struct mitee_ffa_context mitee_ffa_ctx;
  * FF-A assigns a global memory handle for each piece shared memory.
  * This handle is then used when communicating with secure world.
  *
- * Main functions are optee_shm_add_ffa_handle() and optee_shm_rem_ffa_handle()
+ * Active and retained SHARE ownership use the same preallocated record.
  */
-struct shm_rhash {
+enum mitee_ffa_share_state {
+	MITEE_FFA_SHARE_PREPARED = 0,
+	MITEE_FFA_SHARE_ACTIVE,
+	MITEE_FFA_SHARE_RECLAIMING,
+	MITEE_FFA_SHARE_RETAINED,
+	MITEE_FFA_SHARE_RELEASED,
+};
+
+struct mitee_ffa_share {
+	struct optee *owner;
 	struct tee_shm *shm;
+	struct page **pages;
+	size_t num_pages;
+	u32 flags;
 	u64 global_id;
+	void *pool_kaddr;
+	size_t pool_size;
+	enum mitee_ffa_share_state state;
+	bool active_linked;
 	struct rhash_head linkage;
+	struct list_head retained_node;
 };
 
 static void rh_free_fn(void *ptr, void *arg)
@@ -73,9 +90,9 @@ static void rh_free_fn(void *ptr, void *arg)
 }
 
 static const struct rhashtable_params shm_rhash_params = {
-	.head_offset = offsetof(struct shm_rhash, linkage),
+	.head_offset = offsetof(struct mitee_ffa_share, linkage),
 	.key_len = sizeof(u64),
-	.key_offset = offsetof(struct shm_rhash, global_id),
+	.key_offset = offsetof(struct mitee_ffa_share, global_id),
 	.automatic_shrinking = true,
 };
 
@@ -83,58 +100,225 @@ static struct tee_shm *optee_shm_from_ffa_handle(struct optee *optee,
 						 u64 global_id)
 {
 	struct tee_shm *shm = NULL;
-	struct shm_rhash *r;
+	struct mitee_ffa_share *share;
 
 	mutex_lock(&mitee_ffa_ctx.mutex);
-	r = rhashtable_lookup_fast(&mitee_ffa_ctx.global_ids, &global_id,
-				   shm_rhash_params);
-	if (r)
-		shm = r->shm;
+	share = rhashtable_lookup_fast(&mitee_ffa_ctx.global_ids, &global_id,
+				       shm_rhash_params);
+	if (share && share->owner == optee &&
+	    share->state == MITEE_FFA_SHARE_ACTIVE)
+		shm = share->shm;
 	mutex_unlock(&mitee_ffa_ctx.mutex);
 
 	return shm;
 }
 
-static int optee_shm_add_ffa_handle(struct optee *optee, struct tee_shm *shm,
-				    u64 global_id)
+static int optee_shm_add_ffa_share(struct mitee_ffa_share *share)
 {
-	struct shm_rhash *r;
 	int rc;
 
-	r = kmalloc(sizeof(*r), GFP_KERNEL);
-	if (!r)
-		return -ENOMEM;
-	r->shm = shm;
-	r->global_id = global_id;
-
 	mutex_lock(&mitee_ffa_ctx.mutex);
-	rc = rhashtable_lookup_insert_fast(&mitee_ffa_ctx.global_ids, &r->linkage,
+	rc = rhashtable_lookup_insert_fast(&mitee_ffa_ctx.global_ids,
+					   &share->linkage,
 					   shm_rhash_params);
+	if (!rc) {
+		share->active_linked = true;
+		share->state = MITEE_FFA_SHARE_ACTIVE;
+	}
 	mutex_unlock(&mitee_ffa_ctx.mutex);
-
-	if (rc)
-		kfree(r);
 
 	return rc;
 }
 
-static int optee_shm_rem_ffa_handle(struct optee *optee, u64 global_id)
+static int optee_shm_unlink_ffa_share(struct mitee_ffa_share *share)
 {
-	struct shm_rhash *r;
-	int rc = -ENOENT;
+	int rc;
+
+	if (!share->active_linked)
+		return 0;
 
 	mutex_lock(&mitee_ffa_ctx.mutex);
-	r = rhashtable_lookup_fast(&mitee_ffa_ctx.global_ids, &global_id,
-				   shm_rhash_params);
-	if (r)
-		rc = rhashtable_remove_fast(&mitee_ffa_ctx.global_ids, &r->linkage,
-					    shm_rhash_params);
+	share->shm = NULL;
+	rc = rhashtable_remove_fast(&mitee_ffa_ctx.global_ids,
+				    &share->linkage, shm_rhash_params);
+	if (!rc)
+		share->active_linked = false;
 	mutex_unlock(&mitee_ffa_ctx.mutex);
 
-	if (!rc)
-		kfree(r);
-
 	return rc;
+}
+
+static struct mitee_ffa_share *
+optee_shm_take_ffa_share(struct optee *optee, u64 global_id)
+{
+	struct mitee_ffa_share *share;
+	int rc;
+
+	mutex_lock(&mitee_ffa_ctx.mutex);
+	share = rhashtable_lookup_fast(&mitee_ffa_ctx.global_ids, &global_id,
+				       shm_rhash_params);
+	if (!share || share->owner != optee) {
+		share = NULL;
+		mutex_unlock(&mitee_ffa_ctx.mutex);
+		return NULL;
+	}
+
+	share->shm = NULL;
+	rc = rhashtable_remove_fast(&mitee_ffa_ctx.global_ids,
+				    &share->linkage, shm_rhash_params);
+	if (!rc)
+		share->active_linked = false;
+	mutex_unlock(&mitee_ffa_ctx.mutex);
+
+	if (rc)
+		pr_crit("failed to detach FF-A SHARE handle 0x%llx from active map: %d\n",
+			global_id, rc);
+	return share;
+}
+
+static void optee_shm_mark_ffa_share_reclaiming(struct optee *optee,
+						u64 global_id)
+{
+	struct mitee_ffa_share *share;
+
+	mutex_lock(&mitee_ffa_ctx.mutex);
+	share = rhashtable_lookup_fast(&mitee_ffa_ctx.global_ids, &global_id,
+				       shm_rhash_params);
+	if (share && share->owner == optee &&
+	    share->state == MITEE_FFA_SHARE_ACTIVE)
+		share->state = MITEE_FFA_SHARE_RECLAIMING;
+	mutex_unlock(&mitee_ffa_ctx.mutex);
+}
+
+static void mitee_ffa_share_ledger_init(struct optee *optee)
+{
+	mutex_init(&optee->retained_shares.lock);
+	INIT_LIST_HEAD(&optee->retained_shares.retained);
+}
+
+static void mitee_ffa_share_retain(struct optee *optee,
+				   struct mitee_ffa_share *share)
+{
+	share->state = MITEE_FFA_SHARE_RETAINED;
+	mutex_lock(&optee->retained_shares.lock);
+	list_add_tail(&share->retained_node,
+		      &optee->retained_shares.retained);
+	mutex_unlock(&optee->retained_shares.lock);
+}
+
+static struct mitee_ffa_share *
+mitee_ffa_share_take_first(struct optee *optee)
+{
+	struct mitee_ffa_share *share = NULL;
+
+	mutex_lock(&optee->retained_shares.lock);
+	if (!list_empty(&optee->retained_shares.retained)) {
+		share = list_first_entry(&optee->retained_shares.retained,
+					 struct mitee_ffa_share,
+					 retained_node);
+		list_del_init(&share->retained_node);
+	}
+	mutex_unlock(&optee->retained_shares.lock);
+	return share;
+}
+
+static unsigned int mitee_ffa_share_retained_count(struct optee *optee)
+{
+	struct mitee_ffa_share *share;
+	unsigned int count = 0;
+
+	mutex_lock(&optee->retained_shares.lock);
+	list_for_each_entry(share, &optee->retained_shares.retained,
+			    retained_node)
+		count++;
+	mutex_unlock(&optee->retained_shares.lock);
+	return count;
+}
+
+static void mitee_ffa_share_release_pages(struct mitee_ffa_share *share)
+{
+	size_t n;
+
+	if (share->flags & TEE_SHM_POOL) {
+		free_pages((unsigned long)share->pool_kaddr,
+			   get_order(share->pool_size));
+	} else if (share->flags & TEE_SHM_USER_MAPPED) {
+		unpin_user_pages(share->pages, share->num_pages);
+	} else {
+		for (n = 0; n < share->num_pages; n++)
+			put_page(share->pages[n]);
+	}
+
+	kfree(share->pages);
+	share->state = MITEE_FFA_SHARE_RELEASED;
+	kfree(share);
+}
+
+static void mitee_ffa_share_transfer_pages(struct optee *optee,
+					   struct mitee_ffa_share *share,
+					   struct tee_shm *shm)
+{
+	if (share->flags & TEE_SHM_POOL) {
+		share->pool_kaddr = shm->kaddr;
+		share->pool_size = shm->size;
+		shm->kaddr = NULL;
+	} else {
+		WARN_ON(share->pages != shm->pages);
+		shm->pages = NULL;
+		shm->num_pages = 0;
+	}
+	share->shm = NULL;
+	mitee_ffa_share_retain(optee, share);
+}
+
+static void mitee_ffa_share_finish_reclaim(struct optee *optee,
+					   struct tee_shm *shm,
+					   u64 global_handle,
+					   int reclaim_rc)
+{
+	struct mitee_ffa_share *share;
+
+	share = optee_shm_take_ffa_share(optee, global_handle);
+	shm->sec_world_id = 0;
+	if (WARN_ON(!share))
+		return;
+
+	if (reclaim_rc) {
+		mitee_ffa_share_transfer_pages(optee, share, shm);
+		return;
+	}
+
+	share->state = MITEE_FFA_SHARE_RELEASED;
+	if (share->active_linked) {
+		/* Keep the record alive until the transport destroys the map. */
+		share->pages = NULL;
+		share->num_pages = 0;
+		share->pool_kaddr = NULL;
+		share->pool_size = 0;
+		return;
+	}
+	kfree(share);
+}
+
+static unsigned int mitee_ffa_share_ledger_deinit(struct optee *optee)
+{
+	struct mitee_ffa_share *share;
+	unsigned int count = 0;
+
+	mutex_lock(&optee->retained_shares.lock);
+	list_for_each_entry(share, &optee->retained_shares.retained,
+			    retained_node) {
+		pr_crit("retaining ordinary FF-A SHARE handle 0x%llx at teardown\n",
+			share->global_id);
+		count++;
+	}
+	mutex_unlock(&optee->retained_shares.lock);
+	if (count)
+		pr_crit("deinitializing with %u ordinary FF-A SHARE handles retained\n",
+			count);
+	mutex_destroy(&optee->retained_shares.lock);
+
+	return count;
 }
 
 /*
@@ -392,6 +576,7 @@ static int optee_ffa_shm_register(struct tee_context *ctx,
 		.attrs = &mem_attr,
 		.nattrs = 1,
 	};
+	struct mitee_ffa_share *share;
 	struct sg_table sgt;
 	int rc;
 #ifdef MITEE_SHM_DEBUG
@@ -407,6 +592,20 @@ static int optee_ffa_shm_register(struct tee_context *ctx,
 	if (rc)
 		return rc;
 
+	share = kzalloc(sizeof(*share), GFP_KERNEL);
+	if (!share)
+		return -ENOMEM;
+	share->owner = optee;
+	share->shm = shm;
+	if (!(shm->flags & TEE_SHM_POOL))
+		share->pages = pages;
+	share->num_pages = num_pages;
+	share->flags = shm->flags;
+	share->pool_kaddr = shm->kaddr;
+	share->pool_size = shm->size;
+	share->state = MITEE_FFA_SHARE_PREPARED;
+	INIT_LIST_HEAD(&share->retained_node);
+
 #ifdef MITEE_SHM_DEBUG
 	pr_info("%s dump page list\n", __func__);
 	for (iter = 0; iter < num_pages; iter++) {
@@ -417,24 +616,29 @@ static int optee_ffa_shm_register(struct tee_context *ctx,
 	rc = sg_alloc_table_from_pages(&sgt, pages, num_pages, 0,
 				       num_pages * PAGE_SIZE, GFP_KERNEL);
 	if (rc)
-		return rc;
+		goto err_free_share;
 	args.sg = sgt.sgl;
 	rc = mem_ops->memory_share(&args);
 	sg_free_table(&sgt);
 	if (rc)
-		return rc;
+		goto err_free_share;
 
-	rc = optee_shm_add_ffa_handle(optee, shm, args.g_handle);
+	share->global_id = args.g_handle;
+	rc = optee_shm_add_ffa_share(share);
 	if (rc) {
 		int reclaim_rc;
 
 		pr_err("%s add handle failed: %d!\n", __func__, rc);
+		share->state = MITEE_FFA_SHARE_RECLAIMING;
 		reclaim_rc = mem_ops->memory_reclaim(args.g_handle, 0);
 		if (reclaim_rc) {
-			pr_crit("retaining SHM pages for untracked FF-A handle 0x%llx: %d\n",
+			pr_crit("retaining SHM pages for FF-A SHARE handle 0x%llx: %d\n",
 				args.g_handle, reclaim_rc);
+			mitee_ffa_share_transfer_pages(optee, share, shm);
 			return -EOWNERDEAD;
 		}
+		share->state = MITEE_FFA_SHARE_RELEASED;
+		kfree(share);
 		return rc;
 	}
 
@@ -444,6 +648,10 @@ static int optee_ffa_shm_register(struct tee_context *ctx,
 	shm->sec_world_id = args.g_handle;
 
 	return 0;
+
+err_free_share:
+	kfree(share);
+	return rc;
 }
 
 static int optee_ffa_shm_unregister(struct tee_context *ctx,
@@ -458,21 +666,24 @@ static int optee_ffa_shm_unregister(struct tee_context *ctx,
 	int reclaim_rc;
 
 	msg_arg = kzalloc(OPTEE_MSG_GET_ARG_SIZE(1), GFP_KERNEL);
-	if (!msg_arg)
-		return -ENOMEM;
+	if (!msg_arg) {
+		pr_err("%s: failed to allocate unregister SHM command\n",
+		       __func__);
+	} else {
+		msg_arg->cmd = OPTEE_MSG_CMD_UNREGISTER_SHM;
+		msg_arg->num_params = 1;
+		msg_arg->params[0].attr = OPTEE_MSG_ATTR_TYPE_FMEM_INPUT;
+		msg_arg->params[0].u.fmem.global_id = global_handle;
 
-	msg_arg->cmd = OPTEE_MSG_CMD_UNREGISTER_SHM;
-	msg_arg->num_params = 1;
-	msg_arg->params[0].attr = OPTEE_MSG_ATTR_TYPE_FMEM_INPUT;
-	msg_arg->params[0].u.fmem.global_id = global_handle;
-
-	call_rc = optee->ops->do_call_with_arg(ctx, msg_arg);
-	if (call_rc) {
-		pr_err("%s: Unregister SHM id 0x%llx rc %d\n", __func__,
-		       global_handle, call_rc);
-	} else if (msg_arg->ret != TEEC_SUCCESS) {
-		pr_warn_ratelimited("%s: secure unregister SHM id 0x%llx ret %#x\n",
-				    __func__, global_handle, msg_arg->ret);
+		call_rc = optee->ops->do_call_with_arg(ctx, msg_arg);
+		if (call_rc) {
+			pr_err("%s: Unregister SHM id 0x%llx rc %d\n",
+			       __func__, global_handle, call_rc);
+		} else if (msg_arg->ret != TEEC_SUCCESS) {
+			pr_warn_ratelimited("%s: secure unregister SHM id 0x%llx ret %#x\n",
+					    __func__, global_handle,
+					    msg_arg->ret);
+		}
 	}
 
 	/*
@@ -480,14 +691,13 @@ static int optee_ffa_shm_unregister(struct tee_context *ctx,
 	 * ownership.  Reclaim is the authoritative ownership transition and must
 	 * run even when the secure unregister command failed or was redundant.
 	 */
+	optee_shm_mark_ffa_share_reclaiming(optee, global_handle);
 	reclaim_rc = mem_ops->memory_reclaim(global_handle, 0);
 	if (reclaim_rc)
 		pr_err("%s: mem_reclain: 0x%llx %d", __func__,
 		       global_handle, reclaim_rc);
 
-	/* The tee_shm object is being destroyed; never retain its map entry. */
-	optee_shm_rem_ffa_handle(optee, global_handle);
-	shm->sec_world_id = 0;
+	mitee_ffa_share_finish_reclaim(optee, shm, global_handle, reclaim_rc);
 	kfree(msg_arg);
 
 	return reclaim_rc;
@@ -508,14 +718,13 @@ static int optee_ffa_shm_unregister_supp(struct tee_context *ctx,
 	 */
 
 	mem_ops = mitee_ffa_ctx.ffa_dev->ops->mem_ops;
+	optee_shm_mark_ffa_share_reclaiming(optee, global_handle);
 	rc = mem_ops->memory_reclaim(global_handle, 0);
 	if (rc)
 		pr_err("%s: mem_reclain: 0x%llx %d", __func__,
 		       global_handle, rc);
 
-	/* The tee_shm object is being destroyed; never retain its map entry. */
-	optee_shm_rem_ffa_handle(optee, global_handle);
-	shm->sec_world_id = 0;
+	mitee_ffa_share_finish_reclaim(optee, shm, global_handle, rc);
 
 	return rc;
 }
@@ -540,7 +749,7 @@ static void pool_ffa_op_free(struct tee_shm_pool_mgr *poolm,
 	int rc = optee_ffa_shm_unregister(shm->ctx, shm);
 
 	if (rc) {
-		pr_crit("leaking SHM pages after FF-A reclaim failure: %d\n",
+		pr_crit("retaining SHM backing after FF-A reclaim failure: %d\n",
 			rc);
 		shm->kaddr = NULL;
 		return;
@@ -1111,6 +1320,53 @@ static unsigned int mitee_dynamic_mem_reclaim_all(struct optee *optee)
 	return mitee_dynamic_mem_count(&optee->dynamic_mem);
 }
 
+static unsigned int mitee_ffa_share_reclaim_retained(struct optee *optee)
+{
+	struct ffa_device *ffa_dev = READ_ONCE(mitee_ffa_ctx.ffa_dev);
+	const struct ffa_mem_ops *mem_ops = NULL;
+	struct mitee_ffa_share *share;
+	unsigned int initial_count;
+	unsigned int i;
+	int rc;
+
+	if (ffa_dev && ffa_dev->ops)
+		mem_ops = ffa_dev->ops->mem_ops;
+
+	initial_count = mitee_ffa_share_retained_count(optee);
+	for (i = 0; i < initial_count; i++) {
+		share = mitee_ffa_share_take_first(optee);
+		if (WARN_ON(!share))
+			break;
+		if (share->active_linked) {
+			rc = optee_shm_unlink_ffa_share(share);
+			if (rc) {
+				pr_crit("ordinary FF-A SHARE reclaim incomplete: active-map detach failed for handle 0x%llx: %d\n",
+					share->global_id, rc);
+				mitee_ffa_share_retain(optee, share);
+				continue;
+			}
+		}
+		if (!mem_ops) {
+			pr_crit("ordinary FF-A SHARE reclaim incomplete: transport unavailable, retaining handle 0x%llx\n",
+				share->global_id);
+			mitee_ffa_share_retain(optee, share);
+			continue;
+		}
+
+		share->state = MITEE_FFA_SHARE_RECLAIMING;
+		rc = mem_ops->memory_reclaim(share->global_id, 0);
+		if (rc) {
+			pr_crit("ordinary FF-A SHARE reclaim incomplete: retaining handle 0x%llx: %d\n",
+				share->global_id, rc);
+			mitee_ffa_share_retain(optee, share);
+			continue;
+		}
+		mitee_ffa_share_release_pages(share);
+	}
+
+	return mitee_ffa_share_retained_count(optee);
+}
+
 void mitee_lifecycle_init(struct optee *optee)
 {
 	mutex_init(&optee->lifecycle_lock);
@@ -1128,7 +1384,8 @@ void mitee_lifecycle_uninit(struct optee *optee)
 int mitee_lifecycle_shutdown(struct optee *optee,
 			     enum mitee_shutdown_mode mode)
 {
-	unsigned int retained;
+	unsigned int dynamic_retained;
+	unsigned int share_retained;
 	long drained;
 	int rc = 0;
 
@@ -1168,11 +1425,14 @@ int mitee_lifecycle_shutdown(struct optee *optee,
 	}
 
 	mitee_workers_deinit(optee);
-	retained = mitee_dynamic_mem_reclaim_all(optee);
+	dynamic_retained = mitee_dynamic_mem_reclaim_all(optee);
+	share_retained = mitee_ffa_share_reclaim_retained(optee);
 	WRITE_ONCE(optee->lifecycle_state, MITEE_LIFECYCLE_STOPPED);
-	if (retained)
-		pr_err("local lifecycle stopped with %u dynamic FF-A LEND handles retained\n",
-		       retained);
+	if (dynamic_retained || share_retained)
+		pr_err("local lifecycle stopped with:\n"
+		       "\t%u dynamic FF-A LEND handles retained\n"
+		       "\t%u ordinary FF-A SHARE handles retained\n",
+		       dynamic_retained, share_retained);
 	else
 		pr_info("local lifecycle stopped\n");
 out:
@@ -1244,6 +1504,7 @@ static int __init mitee_core_init(void)
 	mitee_lifecycle_init(optee);
 	ATOMIC_INIT_NOTIFIER_HEAD(&optee->notifier);
 	mitee_dynamic_mem_init(&optee->dynamic_mem);
+	mitee_ffa_share_ledger_init(optee);
 
 	rc = optee->comm_ops->register_abi();
 	if (rc) {
@@ -1426,6 +1687,7 @@ err_shutdown:
 	optee_svc = NULL;
 	mitee_rpc_callback_queue_deinit(&optee->cb_queue);
 	mitee_dynamic_mem_deinit(&optee->dynamic_mem);
+	mitee_ffa_share_ledger_deinit(optee);
 	optee_supp_release(&optee->supp);
 	optee_supp_uninit(&optee->supp);
 	optee_wait_queue_exit(&optee->wait_queue);
@@ -1574,6 +1836,7 @@ static void __exit mitee_core_exit(void)
 	optee_bm_disable();
 	mitee_rpc_callback_queue_deinit(&optee->cb_queue);
 	mitee_dynamic_mem_deinit(&optee->dynamic_mem);
+	mitee_ffa_share_ledger_deinit(optee);
 	optee_supp_release(&optee->supp);
 	optee_supp_uninit(&optee->supp);
 	optee_wait_queue_exit(&optee->wait_queue);
