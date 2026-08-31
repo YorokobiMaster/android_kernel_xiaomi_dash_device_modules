@@ -1082,6 +1082,19 @@ static int bm_update_psy_property(struct mtk_battery *gm, enum bm_psy_prop prop)
 	return ret_val;
 }
 
+static int bm_get_bms_average_current(int *current_ua)
+{
+	int current_ma;
+	int ret;
+
+	ret = bms_get_property(BMS_PROP_AV_CURRENT, &current_ma);
+	if (ret < 0)
+		return ret;
+
+	*current_ua = current_ma * 1000;
+	return 0;
+}
+
 static int battery_is_writeable(struct power_supply *psy, enum power_supply_property prop)
 {
 	int rc = 0;
@@ -1105,9 +1118,10 @@ static int bs_psy_get_property(struct power_supply *psy,
 {
 	int ret = 0, qmax = 0;
 	int curr_avg = 0;
-	int remain_ui = 0, remain_mah = 0;
-	int time_to_full = 0;
+	int remain_ui = 0;
 	int tbat = 0;
+	s64 time_to_full;
+	union power_supply_propval bms_val = { 0 };
 	struct mtk_battery_manager *bm;
 	struct battery_data *bs_data;
 	struct mtk_battery *gm;
@@ -1177,16 +1191,7 @@ static int bs_psy_get_property(struct power_supply *psy,
 		bs_data->bat_current = val->intval;
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_AVG:
-
-		if (bm->gm1 != NULL)
-			if(!bm->gm1->bat_plug_out)
-				curr_avg += bm_update_psy_property(bm->gm1, CURRENT_AVG);
-		if (bm->gm2 != NULL)
-			if(!bm->gm2->bat_plug_out)
-				curr_avg += bm_update_psy_property(bm->gm2, CURRENT_AVG);
-
-		val->intval = curr_avg * 100;
-		ret = 0;
+		ret = bm_get_bms_average_current(&val->intval);
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 		power_supply_get_property(gm->ti_bms_psy, POWER_SUPPLY_PROP_CHARGE_FULL, val);
@@ -1223,23 +1228,33 @@ static int bs_psy_get_property(struct power_supply *psy,
 			break;
 		}
 
+		if (bs_data->bat_status != POWER_SUPPLY_STATUS_CHARGING ||
+			input_suspend_get_flag() || smart_soclmt_get_flag() ||
+			smart_bypass_get_flag()) {
+			val->intval = -1;
+			ret = 0;
+			break;
+		}
+
+		ret = bm_get_bms_average_current(&curr_avg);
+		if (ret < 0 || curr_avg >= 0) {
+			val->intval = -1;
+			ret = 0;
+			break;
+		}
+
+		ret = power_supply_get_property(gm->ti_bms_psy,
+			POWER_SUPPLY_PROP_CHARGE_FULL, &bms_val);
+		if (ret < 0 || bms_val.intval <= 0) {
+			val->intval = -1;
+			ret = 0;
+			break;
+		}
+
 		remain_ui = 100 - bs_data->bat_capacity;
-		if (bm->gm1 != NULL)
-			if(!bm->gm1->bat_plug_out) {
-				curr_avg += bm_update_psy_property(bm->gm1, CURRENT_AVG);
-				qmax += bm_update_psy_property(bm->gm1, QMAX_DESIGN);
-			}
-		if (bm->gm2 != NULL)
-			if(!bm->gm2->bat_plug_out) {
-				curr_avg += bm_update_psy_property(bm->gm2, CURRENT_AVG);
-				qmax += bm_update_psy_property(bm->gm2, QMAX_DESIGN);
-			}
-
-		remain_mah = remain_ui * qmax / 10;
-		if (curr_avg != 0)
-			time_to_full = remain_mah * 3600 / curr_avg / 10;
-
-		val->intval = abs(time_to_full);
+		time_to_full = div_s64((s64)remain_ui * bms_val.intval * 36,
+			-(s64)curr_avg);
+		val->intval = clamp_t(s64, time_to_full, 1, INT_MAX);
 		ret = 0;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
