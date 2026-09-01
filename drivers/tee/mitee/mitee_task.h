@@ -100,6 +100,7 @@ struct mitee_task {
 	struct list_head node;
 	struct completion completion;
 	struct optee_msg_arg *arg;
+	size_t arg_size;
 	int id;
 	u32 command;
 	u32 state;

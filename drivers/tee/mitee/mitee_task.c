@@ -27,6 +27,7 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/mm.h>
+#include <linux/overflow.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/timekeeping.h>
@@ -42,6 +43,23 @@ static_assert(sizeof(struct mitee_msg_ring) == 0x18);
 static_assert(sizeof(struct mitee_msg) == MITEE_MSG_SLOT_SIZE);
 static_assert(offsetof(struct mitee_msg, payload) == 0x14);
 static_assert(offsetof(struct mitee_msg, timestamp) == 0xf4);
+
+static int mitee_msg_arg_size(u32 num_params, size_t *size)
+{
+	size_t params_size;
+
+	if (check_mul_overflow((size_t)num_params,
+			       sizeof(struct optee_msg_param), &params_size) ||
+	    check_add_overflow(sizeof(struct optee_msg_arg), params_size,
+			       size)) {
+		*size = SIZE_MAX;
+		return -EOVERFLOW;
+	}
+	if (*size > MITEE_MSG_ARG_SIZE)
+		return -E2BIG;
+
+	return 0;
+}
 
 static const char *mitee_msg_queue_state_name(enum mitee_msg_queue_state state)
 {
@@ -262,22 +280,27 @@ static struct mitee_task *mitee_task_alloc(struct tee_context *ctx,
 {
 	struct optee *optee = tee_get_drvdata(ctx->teedev);
 	struct mitee_task *task;
+	size_t arg_size;
 	int id;
+	int rc;
+
+	if (command != MITEE_MSG_CMD_CALL || !arg)
+		return ERR_PTR(-EINVAL);
+
+	rc = mitee_msg_arg_size(arg->num_params, &arg_size);
+	if (rc)
+		return ERR_PTR(rc);
 
 	task = kzalloc(sizeof(*task), GFP_KERNEL);
 	if (!task)
 		return ERR_PTR(-ENOMEM);
-
-	if (command != MITEE_MSG_CMD_CALL) {
-		kfree(task);
-		return ERR_PTR(-EINVAL);
-	}
 
 	task->ctx = ctx;
 	INIT_LIST_HEAD(&task->node);
 	init_completion(&task->completion);
 	task->command = command;
 	task->arg = arg;
+	task->arg_size = arg_size;
 	task->state = 1;
 
 	mutex_lock(&optee->tasks.lock);
@@ -331,9 +354,10 @@ static __always_inline int mitee_msg_pack(struct mitee_msg *msg, int task_id,
 	msg->task_id = task_id;
 	msg->command = command;
 	if (arg) {
-		size = OPTEE_MSG_GET_ARG_SIZE(arg->num_params);
-		if (size > sizeof(msg->payload))
-			return -E2BIG;
+		int rc = mitee_msg_arg_size(arg->num_params, &size);
+
+		if (rc)
+			return rc;
 		memcpy(msg->payload, arg, size);
 	}
 	ktime_get_real_ts64(&ts);
@@ -344,6 +368,10 @@ static __always_inline int mitee_msg_pack(struct mitee_msg *msg, int task_id,
 static int mitee_msg_unpack(const struct mitee_msg *msg,
 			    struct optee_msg_arg **arg)
 {
+	struct optee_msg_arg *msg_arg;
+	size_t size;
+	int rc;
+
 	if (msg->magic != MITEE_MSG_MAGIC) {
 		pr_err("invalid magic\n");
 		return -EINVAL;
@@ -353,9 +381,15 @@ static int mitee_msg_unpack(const struct mitee_msg *msg,
 		return -EINVAL;
 	}
 
-	*arg = (struct optee_msg_arg *)msg->payload;
-	if (OPTEE_MSG_GET_ARG_SIZE((*arg)->num_params) > sizeof(msg->payload))
-		return -E2BIG;
+	if (sizeof(*msg_arg) > sizeof(msg->payload))
+		return -EPROTO;
+
+	msg_arg = (struct optee_msg_arg *)msg->payload;
+	rc = mitee_msg_arg_size(msg_arg->num_params, &size);
+	if (rc)
+		return rc;
+
+	*arg = msg_arg;
 	return 0;
 }
 
@@ -363,6 +397,9 @@ static void mitee_task_complete(struct optee *optee, int task_id,
 				const struct optee_msg_arg *arg, int error)
 {
 	struct mitee_task *task;
+	size_t returned_size = 0;
+	u32 returned_num_params = 0;
+	int validation_error = 0;
 
 	mutex_lock(&optee->tasks.lock);
 	task = idr_find(&optee->tasks.idr, task_id);
@@ -372,8 +409,25 @@ static void mitee_task_complete(struct optee *optee, int task_id,
 			task->arg->ret = TEEC_ERROR_COMMUNICATION;
 			task->arg->ret_origin = TEEC_ORIGIN_COMMS;
 		} else {
-			memcpy(task->arg, arg,
-			       OPTEE_MSG_GET_ARG_SIZE(arg->num_params));
+			returned_num_params = arg->num_params;
+			validation_error = mitee_msg_arg_size(returned_num_params,
+							      &returned_size);
+			if (!validation_error && returned_size > task->arg_size)
+				validation_error = -EOVERFLOW;
+			if (!validation_error &&
+			    returned_size > MITEE_MSG_ARG_SIZE)
+				validation_error = -E2BIG;
+			if (validation_error) {
+				pr_err("task %d response rejected: capacity %zu num_params %u size %zu error %d\n",
+				       task_id, task->arg_size, returned_num_params,
+				       returned_size, validation_error);
+				task->arg->ret = TEEC_ERROR_COMMUNICATION;
+				task->arg->ret_origin = TEEC_ORIGIN_COMMS;
+				task->result = validation_error == -E2BIG ?
+					       -EPROTO : validation_error;
+			} else {
+				memcpy(task->arg, arg, returned_size);
+			}
 		}
 		task->state = 4;
 		complete(&task->completion);
