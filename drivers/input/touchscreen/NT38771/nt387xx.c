@@ -40,6 +40,7 @@
 #include <drm/drm_panel.h>
 extern void dsi_panel_gesture_enable(bool enable);
 extern void nvt_ts_display_esd_flag(bool *esd_flag);
+extern int get_lockdown_info_for_nvt(unsigned char *lockdown_info);
 #elif IS_ENABLED(NVT_MSM_DRM_NOTIFY)
 #include <linux/msm_drm_notify.h>
 #elif IS_ENABLED(NVT_FB_NOTIFY)
@@ -961,26 +962,63 @@ void get_tp_info(void)
 }
 /* P16 code for HQFEAT-89651 by liaoxianguo at 2025/3/24 end */
 /*P16 code for HQFEAT-94426 by liuyupei at 2025/5/6 start*/
+static int nvt_lockdown_info_read(void)
+{
+	int retry;
+	int ret;
+
+	if (!ts)
+		return -1;
+	if (ts->lockdown_valid)
+		return 0;
+
+	for (retry = 0; retry < 3; retry++) {
+#if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
+		ret = get_lockdown_info_for_nvt(ts->lockdown);
+#else
+		ret = -1;
+#endif
+		if (!ret)
+			break;
+		msleep(50);
+		NVT_LOG("lockdown read retry %d\n", retry + 1);
+	}
+	if (ret) {
+		NVT_ERR("lockdown read failed\n");
+		return -1;
+	}
+
+	/* Preserve the stock '+' identity substitution. */
+	if (ts->lockdown[3] == '+') {
+		if (ts->lcd_id_value1 == 0)
+			memcpy(ts->lockdown, "\x46\x36\x32\x01\x10\x75\x32\x00", 8);
+		else
+			memcpy(ts->lockdown, "\x53\x42\x32\x01\x10\x75\x32\x00", 8);
+	}
+	ts->lockdown_valid = true;
+	return 0;
+}
+
 static u8 nvt_panel_vendor_read(void)
 {
-    if (ts)
-        return ts->lockdown[0];
-    else
-        return 0;
+	if (!ts)
+		return '0';
+	if (!ts->lockdown_valid) {
+		nvt_lockdown_info_read();
+		/* Stock returns '0' on the first read, even after success. */
+		return '0';
+	}
+	return ts->lockdown[0];
 }
 static u8 nvt_panel_color_read(void)
 {
-    if (ts)
-        return ts->lockdown[2];
-    else
-        return 0;
+	return '2';
 }
 static u8 nvt_panel_display_read(void)
 {
-    if (ts)
-        return ts->lockdown[1];
-    else
-        return 0;
+	if (!ts || nvt_lockdown_info_read() < 0)
+		return '0';
+	return ts->lockdown[1];
 }
 static char nvt_touch_vendor_read(void)
 {

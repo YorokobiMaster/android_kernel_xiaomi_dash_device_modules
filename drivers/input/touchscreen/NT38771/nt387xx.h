@@ -308,6 +308,7 @@ struct nvt_ts_data {
 /*P16 code for BUGP16-8418 by xiongdejun at 2025/7/15 end*/
 /*P16 code for HQFEAT-94426 by liuyupei at 2025/5/6 start*/
 	uint8_t lockdown[8];
+	bool lockdown_valid;
 /*P16 code for HQFEAT-94426 by liuyupei at 2025/5/6 end*/
 /*P16 code for HQFEAT-89693 by xiongdejun at 2025/3/24 start*/
 	char lockdowninfo[LOCKDOWN_INFO_LENGTH];
