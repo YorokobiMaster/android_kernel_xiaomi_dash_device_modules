@@ -259,7 +259,7 @@ typedef struct hardware_operation {
 	void (*fod_test)(int value);
 	void (*fod_attn_test)(int value);
 	void (*fod_low_attn)(int value);
-	void (*set_thermal_temp)(void);
+	int (*set_thermal_temp)(int temperature, bool read_bms);
 } hardware_operation_t;
 typedef struct hardware_param {
 	u16 x_resolution;
@@ -275,5 +275,6 @@ typedef struct hardware_param {
 	char config_file_name[64];
 	char driver_version[64];
 	char fw_version[64];
+	u8 temperature_change_threshold;
 } hardware_param_t;
 #endif

@@ -5,6 +5,8 @@
 #include <linux/rtc.h>
 #include <linux/time.h>
 #include <linux/time64.h>
+#include <linux/kthread.h>
+#include <linux/power_supply.h>
 #include <linux/types.h>
 #include <net/sock.h>
 #include <net/netlink.h>
@@ -27,6 +29,83 @@ static DEFINE_MUTEX(thp_ic_read_data_mutex);
 static DEFINE_MUTEX(thp_ic_write_data_mutex);
 static bool xiaomi_touch_probe_finished = false;
 #define RAW_SIZE (PAGE_SIZE * 12)
+
+static int temperature_charge_state = -1;
+static int temperature_last = 1000;
+
+int get_bms_temp_common(void)
+{
+	struct power_supply *bms;
+	union power_supply_propval value = { 0 };
+
+	bms = power_supply_get_by_name("bms");
+	if (!bms || power_supply_get_property(bms, POWER_SUPPLY_PROP_TEMP, &value))
+		return -1000;
+	return value.intval;
+}
+EXPORT_SYMBOL_GPL(get_bms_temp_common);
+
+void xiaomi_touch_set_temperature_charge_state(int charging)
+{
+	WRITE_ONCE(temperature_charge_state, charging);
+}
+EXPORT_SYMBOL_GPL(xiaomi_touch_set_temperature_charge_state);
+
+void enable_temperature_detection_func(bool enable)
+{
+	struct xiaomi_touch_panel_data *panel = &touch_panel_data[0];
+
+	if (!panel->registered || !panel->hardware_operation.set_thermal_temp)
+		return;
+	WRITE_ONCE(panel->temp_enabled, enable);
+	wake_up_interruptible(&panel->temp_wait);
+}
+EXPORT_SYMBOL_GPL(enable_temperature_detection_func);
+
+void stop_temperature_detection_func(void)
+{
+	struct xiaomi_touch_panel_data *panel = &touch_panel_data[0];
+
+	if (panel->temp_thread) {
+		kthread_stop(panel->temp_thread);
+		panel->temp_thread = NULL;
+	}
+}
+EXPORT_SYMBOL_GPL(stop_temperature_detection_func);
+
+static int xiaomi_touch_temp_thread_func(void *data)
+{
+	struct xiaomi_touch_panel_data *panel = data;
+	int raw_temp;
+	int temperature;
+	unsigned int interval;
+
+	while (!kthread_should_stop()) {
+		wait_event_interruptible(panel->temp_wait,
+			READ_ONCE(panel->temp_enabled) || kthread_should_stop());
+		if (kthread_should_stop())
+			break;
+		if (!READ_ONCE(panel->temp_enabled))
+			continue;
+		raw_temp = get_bms_temp_common();
+		temperature = (raw_temp + 5) / 10;
+		if (abs(raw_temp) < 1000 &&
+		    abs(temperature - temperature_last) >=
+		    panel->hardware_param.temperature_change_threshold) {
+			panel->hardware_operation.set_thermal_temp(temperature, false);
+			/* Stock notifies and advances the cache even on IC failure. */
+			add_common_data_to_buf(0, SET_CUR_VALUE, 0x446, 1, &temperature);
+			temperature_last = temperature;
+		}
+		interval = READ_ONCE(temperature_charge_state) ? 5000 : 10000;
+		wait_event_interruptible_timeout(panel->temp_wait,
+			kthread_should_stop(), msecs_to_jiffies(interval));
+	}
+	return 0;
+}
+
+static_assert(sizeof(hardware_param_t) == 0xd6);
+static_assert(offsetof(hardware_param_t, temperature_change_threshold) == 0xd5);
 
 static_assert(sizeof(hardware_operation_t) == 31 * sizeof(void *));
 static_assert(offsetof(hardware_operation_t, set_cur_value) ==
@@ -318,6 +397,19 @@ int register_touch_panel_common(struct device *dev, int touch_id,
 	mutex_init(&panel->common_data_lock);
 	mutex_init(&panel->pm_lock);
 	panel->registered = true;
+	init_waitqueue_head(&panel->temp_wait);
+	panel->temp_enabled = true;
+	if (touch_id == 0 && panel->hardware_operation.set_thermal_temp) {
+		panel->temp_thread = kthread_run(xiaomi_touch_temp_thread_func,
+					       panel, "xiaomi_touch_temp_thread");
+		if (IS_ERR(panel->temp_thread)) {
+			int ret = PTR_ERR(panel->temp_thread);
+
+			panel->temp_thread = NULL;
+			unregister_touch_panel_common(touch_id);
+			return ret;
+		}
+	}
 
 	return 0;
 }
@@ -337,7 +429,8 @@ void unregister_touch_panel_common(int touch_id)
 	if (!panel->registered)
 		return;
 	xiaomi_unregister_panel_notifier_common(touch_id);
-
+	if (touch_id == 0)
+		stop_temperature_detection_func();
 	spin_lock_irqsave(&panel->client_lock, flags);
 	list_for_each_entry_safe(client, next, &panel->client_list, node) {
 		list_del_init(&client->node);
@@ -2761,6 +2854,7 @@ static int xiaomi_touch_remove(struct platform_device *pdev)
 {
 	int i;
 	xiaomi_touch_probe_finished = false;
+	stop_temperature_detection_func();
 	netlink_exit();
 	sysfs_remove_group(&xiaomi_touch_dev.dev->kobj, &xiaomi_touch_dev.attrs);
 	device_destroy(xiaomi_touch_dev.class, 'T');

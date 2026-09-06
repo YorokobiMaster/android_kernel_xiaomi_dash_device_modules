@@ -3698,6 +3698,27 @@ static int nvt_ts_resume_suspend(int resume, int gesture_type)
 	return nvt_ts_suspend(&ts->client->dev);
 }
 
+static int nvt_set_thermal_temp(int temperature, bool read_bms)
+{
+	int ret;
+	int raw_temp;
+
+	if (!bTouchIsAwake)
+		return -1;
+	if (read_bms) {
+		raw_temp = get_bms_temp_common();
+		/* Stock resume accepts +/-1000, unlike periodic detection. */
+		if (abs(raw_temp) > 1000)
+			return -1;
+		temperature = (raw_temp + 5) / 10;
+	}
+	mutex_lock(&ts->lock);
+	ret = nvt_set_extend_custom_cmd(0x29, temperature);
+	NVT_LOG("set thermal temperature %d, ret=%d\n", temperature, ret);
+	mutex_unlock(&ts->lock);
+	return ret;
+}
+
 static const hardware_operation_t nvt_hardware_operation = {
 	.set_cur_value = nvt_set_thp_cur_value,
 	.display_suspend_ready = nvt_display_suspend_ready,
@@ -3706,6 +3727,7 @@ static const hardware_operation_t nvt_hardware_operation = {
 	.resume_suspend = nvt_ts_resume_suspend,
 	.fod_attn_test = nvt_xiaomi_touch_fod_attn_test,
 	.fod_low_attn = nvt_xiaomi_touch_fod_low_attn,
+	.set_thermal_temp = nvt_set_thermal_temp,
 };
 
 static int nvt_register_touch_panel_common(struct device *dev)
@@ -3721,6 +3743,7 @@ static int nvt_register_touch_panel_common(struct device *dev)
 	hardware_param.frame_data_buf_size = 10;
 	hardware_param.raw_data_page_size = 8;
 	hardware_param.raw_data_buf_size = 5;
+	hardware_param.temperature_change_threshold = 1;
 	memcpy(hardware_param.lockdown_info, ts->lockdown,
 	       sizeof(hardware_param.lockdown_info));
 	strscpy(hardware_param.config_file_name,
@@ -3811,6 +3834,9 @@ static void charger_power_supply_work(struct work_struct *work)
 	}
 	ts_data = container_of(work, struct nvt_ts_data, power_supply_work);
 	charge_status = !!nvt_get_charging_status();
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	xiaomi_touch_set_temperature_charge_state(charge_status);
+#endif
 /*P16 code for BUGP16-3227 by p-liaoxianguo at 2025/6/4 start*/
 	if (charge_status != ts_data->charger_status || ts_data->charger_status <0) {
 		ts_data->charger_status = charge_status;
@@ -4579,6 +4605,10 @@ err_input_register_device_failed:
 	}
 err_input_dev_alloc_failed:
 err_chipvertrim_failed:
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	if (ts->touch_panel_registered)
+		stop_temperature_detection_func();
+#endif
 	mutex_destroy(&ts->xbuf_lock);
 	mutex_destroy(&ts->lock);
 	nvt_gpio_deconfig(ts);
@@ -4628,6 +4658,9 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 #endif
 {
 	NVT_LOG("Removing driver...\n");
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	stop_temperature_detection_func();
+#endif
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 start */
 	power_supply_unreg_notifier(&ts->charger_notifier);
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 end */
@@ -4747,6 +4780,9 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 static void nvt_ts_shutdown(struct spi_device *client)
 {
 	NVT_LOG("Shutdown driver...\n");
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	stop_temperature_detection_func();
+#endif
 
 	nvt_irq_enable(false);
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 start */
@@ -4842,6 +4878,9 @@ static int32_t nvt_ts_suspend(struct device *dev)
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 #if MT_PROTOCOL_B
 	uint32_t i = 0;
+#endif
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	enable_temperature_detection_func(false);
 #endif
 	if (!bTouchIsAwake) {
 		NVT_LOG("Touch is already suspend\n");
@@ -5086,6 +5125,10 @@ static int32_t nvt_ts_resume(struct device *dev)
 	NVT_LOG("nvt charger mode is %d in resume\n",ts->charger_status_store);
 	mutex_unlock(&ts->lock);
 /*P16 code for BUGP16-3227 by p-liaoxianguo at 2025/6/4 end*/
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	enable_temperature_detection_func(true);
+	nvt_set_thermal_temp(0, true);
+#endif
 	NVT_LOG("end\n");
 
 	return 0;
