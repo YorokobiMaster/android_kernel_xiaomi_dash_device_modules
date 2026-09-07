@@ -5323,9 +5323,6 @@ static int32_t nvt_ts_resume(struct device *dev)
 	ts->gesture_command = 4;
 	NVT_LOG("fac resume gesture_command is 4\n");
 #endif
-/*P16 code for HQFEAT-88864 by xiongdejun at 2025/4/2 start*/
-	nvt_set_edge_reject_switch(edge_orientation_store);
-/*P16 code for HQFEAT-88864 by xiongdejun at 2025/4/2 end*/
 	mutex_unlock(&ts->lock);
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
 /*P16 code for HQFEAT-89815 by liaoxianguo at 2025/4/1 start*/
