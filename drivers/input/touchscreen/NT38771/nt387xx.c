@@ -2048,10 +2048,21 @@ static int nvt_enable_gesture_mode(int value)
 	}
 
 	// set gesture enable/disable
-	nvt_set_gesture_switch((uint8_t)(ts->gesture_command & 0xFF));
+	ret = nvt_set_gesture_switch((uint8_t)(ts->gesture_command & 0xFF));
+	if (ret < 0)
+		nvt_read_fw_history_all();
 
-	msleep(35);
 	if (value) {
+		if (ts->pen_support) {
+			msleep(35);
+			buf[0] = EVENT_MAP_HOST_CMD;
+			buf[1] = 0x7B;
+			buf[2] = (ts->gesture_command >> 1) & 0x01;
+			ret = CTP_SPI_WRITE(ts->client, buf, 3);
+			if (ret < 0)
+				NVT_ERR("set cmd failed!\n");
+		}
+		msleep(35);
 		/*---write command to enter "wakeup gesture mode"---*/
 		buf[0] = EVENT_MAP_HOST_CMD;
 		buf[1] = 0x13;
