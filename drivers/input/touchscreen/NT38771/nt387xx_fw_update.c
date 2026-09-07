@@ -752,6 +752,8 @@ int32_t nvt_update_firmware(char *firmware_name, uint8_t skip_update_ilm)
 /*P16 code for BUGP16-9011 by liuyupei at 2025/7/24 start*/
 	int32_t retry = 0;
 
+	WRITE_ONCE(ts->firmware_loading, true);
+
 retry_update_firmware:
 /*P16 code for BUGP16-9011 by liuyupei at 2025/7/24 end*/
 #if !NVT_TRY_SKIP_UPDATE_ILM
@@ -824,6 +826,7 @@ request_firmware_fail:
 		goto retry_update_firmware;
 	}
 /*P16 code for BUGP16-9011 by liuyupei at 2025/7/24 end*/
+	WRITE_ONCE(ts->firmware_loading, false);
 	return ret;
 }
 
@@ -839,6 +842,8 @@ void Boot_Update_Firmware(struct work_struct *work)
 {
 	mutex_lock(&ts->lock);
 	nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+	if (ts->pen_support)
+		nvt_restore_pen_state();
 	/* P16 code for HQFEAT-89651 by liaoxianguo at 2025/3/24 start */
 	get_tp_info();
 	/* P16 code for HQFEAT-89651 by liaoxianguo at 2025/3/24 end */

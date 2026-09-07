@@ -133,6 +133,7 @@ static int32_t nvt_ts_resume(struct device *dev);
 static int32_t nvt_ts_suspend(struct device *dev);
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
 static void nvt_fod_attn_status_recovery(void);
+static void nvt_reload_mode_cache(void);
 #endif
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
 static struct drm_panel *active_panel;
@@ -2082,6 +2083,29 @@ static int nvt_enable_gesture_mode(int value)
 	return ret;
 }
 
+void nvt_restore_pen_state(void)
+{
+	static int enable_last = -1;
+	int enable, ret;
+
+	mutex_lock(&ts->pen_lock);
+	if (bTouchIsAwake != 1)
+		goto out;
+	/* Stock policy bytes are distinct from hardware pen_support. */
+	enable = ts->pen_enabled && !ts->pen_inhibited && !ts->game_mode;
+	ret = nvt_set_extend_custom_cmd(0x04, enable);
+	if (ret < 0) {
+		NVT_ERR("restore pen state failed: %d\n", ret);
+	} else if (enable_last != enable) {
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+		add_common_data_to_buf(0, SET_CUR_VALUE, 0x441, 1, &enable);
+#endif
+		enable_last = enable;
+	}
+out:
+	mutex_unlock(&ts->pen_lock);
+}
+
 static void nvt_fw_reload_recovery(void)
 {
 	int i = 0;
@@ -2108,6 +2132,23 @@ static void nvt_fw_reload_recovery(void)
 		input_sync(ts->input_dev);
 	}
 
+	if (ts->pen_input_dev) {
+		input_report_abs(ts->pen_input_dev, ABS_X, 0);
+		input_report_abs(ts->pen_input_dev, ABS_Y, 0);
+		input_report_abs(ts->pen_input_dev, ABS_PRESSURE, 0);
+		input_report_abs(ts->pen_input_dev, ABS_TILT_X, 0);
+		input_report_abs(ts->pen_input_dev, ABS_TILT_Y, 0);
+		input_report_abs(ts->pen_input_dev, ABS_DISTANCE, 0);
+		input_report_key(ts->pen_input_dev, BTN_TOUCH, 0);
+		input_report_key(ts->pen_input_dev, BTN_TOOL_PEN, 0);
+		input_sync(ts->pen_input_dev);
+	}
+	if (ts->pen_support)
+		nvt_restore_pen_state();
+	ts->charger_status = -1;
+	if (ts->event_wq)
+		queue_work(ts->event_wq, &ts->power_supply_work);
+
 	/* reload gesture cmd when open gesture */
 	if (!(!ts) && (!bTouchIsAwake) && (ts->gesture_command)) {
 		nvt_enable_gesture_mode(true);
@@ -2115,9 +2156,16 @@ static void nvt_fw_reload_recovery(void)
 	/*P16 code for BUGP16-8567 by liuyupei at 2025/7/23 start*/
 	if (bTouchIsAwake) {
 		nvt_set_gesture_switch(0x00);
+		if (ts->report_rate > 0)
+			nvt_set_extend_custom_cmd(0x0a, ts->report_rate);
 	#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+		nvt_reload_mode_cache();
 		nvt_fod_attn_status_recovery();
 	#endif
+	} else {
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+		nvt_reload_mode_cache();
+#endif
 	}
 	/*P16 code for BUGP16-8567 by liuyupei at 2025/7/23 end*/
 
@@ -2500,6 +2548,8 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 		printk("nvt-ts: touch_irq_thread prio improve to %d", MAX_RT_PRIO - 1);
 		sched_setscheduler_nocheck(touch_task, SCHED_FIFO, &par);
 	}
+	if (READ_ONCE(ts->selftest_active))
+		return IRQ_HANDLED;
 	cpu_latency_qos_add_request(&ts->pm_qos_req_irq, 0);
 /*P16 code for HQFEAT-89815 by liaoxianguo at 2025/4/1 end*/
 #if WAKEUP_GESTURE
@@ -3053,6 +3103,21 @@ void nvt_send_gesture_flag(int gesture_command)
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
 static struct xiaomi_touch_interface xiaomi_touch_interfaces;
+
+static void nvt_reload_mode_cache(void)
+{
+	int i;
+	int (*mode)[VALUE_TYPE_SIZE] = xiaomi_touch_interfaces.touch_mode;
+
+	mode[Touch_Resist_RF][GET_CUR_VALUE] = mode[Touch_Resist_RF][GET_DEF_VALUE];
+	if (!ts->game_mode) {
+		mode[Touch_Panel_Orientation][GET_CUR_VALUE] =
+			mode[Touch_Panel_Orientation][GET_DEF_VALUE];
+		return;
+	}
+	for (i = 0; i < Touch_Resist_RF; i++)
+		mode[i][GET_CUR_VALUE] = mode[i][GET_DEF_VALUE];
+}
 static void nvt_init_touchmode_data(void)
 {
 	int i = 0;
@@ -3309,6 +3374,7 @@ static int nvt_set_cur_value(int nvt_mode, int nvt_value)
 	}
 	switch (nvt_mode) {
 	case Touch_Game_Mode:
+			ts->game_mode = !!xiaomi_touch_interfaces.touch_mode[Touch_Game_Mode][SET_CUR_VALUE];
 /*P16 code for BUGP16-6610 by P-liaoxianguo at 2025/6/24 start*/
 #if NVT_SUPER_RESOLUTION
 			temp_value = xiaomi_touch_interfaces.touch_mode[Touch_Game_Mode][SET_CUR_VALUE];
@@ -3623,6 +3689,29 @@ static int nvt_set_thp_cur_value(int mode, int *values)
 
 	if (!ts || !values)
 		return -ENODEV;
+	if (mode == THP_HAL_REPORT_RATE) {
+		if (values[0] < 0)
+			return 0;
+		ts->report_rate = (s16)values[0];
+		mutex_lock(&ts->lock);
+		ret = nvt_set_extend_custom_cmd(0x0a, ts->report_rate);
+		mutex_unlock(&ts->lock);
+		return ret;
+	}
+	if ((mode == THP_LOCK_SCAN_MODE || mode == THP_IDLE_BASALINE_UPDATE) &&
+	    values[0] >= 0 && READ_ONCE(ts->selftest_active)) {
+		WRITE_ONCE(ts->selftest_scan_pending, true);
+		return 0;
+	}
+	if (mode == THP_IDLE_BASALINE_UPDATE) {
+		if (values[0] < 0 || !bTouchIsAwake ||
+		    ts->ic_state < NVT_STATE_RESUME_OUT)
+			return 0;
+		mutex_lock(&ts->lock);
+		ret = nvt_set_extend_custom_cmd(0x19, 1);
+		mutex_unlock(&ts->lock);
+		return ret;
+	}
 	if (mode == THP_FOD_DOWNUP_CTL) {
 		value = !!values[0];
 		ts->thp_fod_downup = value;
@@ -3719,8 +3808,85 @@ static int nvt_set_thermal_temp(int temperature, bool read_bms)
 	return ret;
 }
 
+static int nvt_enable_touch_raw(int value)
+{
+	ts->touch_raw_enabled = true;
+	add_common_data_to_buf(0, SET_CUR_VALUE, THP_HAL_CHARGING_STATUS,
+				      1, &ts->charger_status);
+	mutex_lock(&ts->lock);
+	nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+	mutex_unlock(&ts->lock);
+	return 0;
+}
+
+static void nvt_resume_work(struct work_struct *work)
+{
+	struct nvt_ts_data *data = container_of(work, struct nvt_ts_data, resume_work);
+
+	nvt_ts_resume(&data->client->dev);
+}
+
+static int nvt_touch_doze_analysis(int value)
+{
+	int ret;
+
+	if (!ts)
+		return -EINVAL;
+	switch (value) {
+	case 0:
+		if (!ts->event_wq)
+			return -1;
+		flush_workqueue(ts->event_wq);
+		ts->doze_analysis_active = true;
+		nvt_ts_suspend(&ts->client->dev);
+		queue_work(ts->event_wq, &ts->resume_work);
+		flush_workqueue(ts->event_wq);
+		ts->doze_analysis_active = false;
+		break;
+	case 1:
+		mutex_lock(&ts->lock);
+		ret = nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+		mutex_unlock(&ts->lock);
+		if (ret)
+			NVT_ERR("doze firmware update failed: %d\n", ret);
+		break;
+	case 2:
+		nvt_irq_enable(true);
+		break;
+	case 3:
+		nvt_irq_enable(false);
+		break;
+	case 4:
+		if (ts->client->irq) {
+			ret = request_threaded_irq(ts->client->irq, NULL, nvt_ts_work_func,
+					ts->int_trigger_type | IRQF_ONESHOT,
+					NVT_SPI_NAME, ts);
+			if (ret)
+				NVT_ERR("doze request irq failed: %d\n", ret);
+			else
+				nvt_irq_enable(true);
+		}
+		break;
+	case 5:
+		return !!gpio_get_value(ts->irq_gpio);
+	case 6:
+		nvt_ts_suspend(&ts->client->dev);
+		break;
+	case 7:
+		if (!ts->event_wq)
+			return -1;
+		flush_workqueue(ts->event_wq);
+		queue_work(ts->event_wq, &ts->resume_work);
+		break;
+	}
+	/* Stock caches -1 even for successfully executed commands. */
+	return -1;
+}
+
 static const hardware_operation_t nvt_hardware_operation = {
 	.set_cur_value = nvt_set_thp_cur_value,
+	.enable_touch_raw = nvt_enable_touch_raw,
+	.touch_doze_analysis = nvt_touch_doze_analysis,
 	.display_suspend_ready = nvt_display_suspend_ready,
 	.htc_ic_set_mode_value = nvt_thp_ic_set_mode,
 	.htc_ic_get_mode_value = nvt_thp_ic_get_mode,
@@ -3829,14 +3995,32 @@ static void charger_power_supply_work(struct work_struct *work)
 {
 	struct nvt_ts_data *ts_data = NULL;
 	int charge_status = -1;
+	bool recovery;
+	u8 command[3] = { EVENT_MAP_HOST_CMD, 0, 0 };
 	if (!work) {
 		NVT_ERR("work is null");
 	}
 	ts_data = container_of(work, struct nvt_ts_data, power_supply_work);
-	charge_status = !!nvt_get_charging_status();
+	recovery = ts_data->charger_status < 0;
+	charge_status = recovery ? !!power_supply_is_system_supplied() :
+				   !!nvt_get_charging_status();
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
 	xiaomi_touch_set_temperature_charge_state(charge_status);
 #endif
+	if (recovery) {
+		if (READ_ONCE(ts_data->firmware_loading) || ts_data->nvt_tool_in_use)
+			return;
+		mutex_lock(&ts_data->lock);
+		if (bTouchIsAwake == 1) {
+			ts_data->charger_status = charge_status;
+			ts_data->charger_status_store = charge_status;
+			command[1] = charge_status ? 0x53 : 0x51;
+			if (CTP_SPI_WRITE(ts_data->client, command, sizeof(command)))
+				NVT_ERR("WDT charger restore failed\n");
+		}
+		mutex_unlock(&ts_data->lock);
+		return;
+	}
 /*P16 code for BUGP16-3227 by p-liaoxianguo at 2025/6/4 start*/
 	if (charge_status != ts_data->charger_status || ts_data->charger_status <0) {
 		ts_data->charger_status = charge_status;
@@ -4131,6 +4315,7 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	}
 
 	mutex_init(&ts->lock);
+	mutex_init(&ts->pen_lock);
 	mutex_init(&ts->xbuf_lock);
 
 	// need 10ms delay after POR(power on reset)
@@ -4448,6 +4633,9 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		goto err_create_nvt_charger_queue_failed;
 	}
 	INIT_WORK(&ts->power_supply_work, charger_power_supply_work);
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	INIT_WORK(&ts->resume_work, nvt_resume_work);
+#endif
 	ts->charger_notifier.notifier_call = charger_status_event_callback;
 	if (power_supply_reg_notifier(&ts->charger_notifier))
 	NVT_ERR("failed to register charger notifier client");
@@ -4548,6 +4736,10 @@ err_create_nvt_reset_fw_status_wq_failed:
 /*P16 code for HQFEAT-89614 by liaoxianguo at 2025/4/3 end*/
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 start */
 	if (ts->event_wq) {
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+		cancel_work_sync(&ts->resume_work);
+#endif
+		nvt_irq_enable(false);
 		cancel_work_sync(&ts->power_supply_work);
 		destroy_workqueue(ts->event_wq);
 		ts->event_wq = NULL;
@@ -4610,6 +4802,7 @@ err_chipvertrim_failed:
 		stop_temperature_detection_func();
 #endif
 	mutex_destroy(&ts->xbuf_lock);
+	mutex_destroy(&ts->pen_lock);
 	mutex_destroy(&ts->lock);
 	nvt_gpio_deconfig(ts);
 err_gpio_config_failed:
@@ -4695,6 +4888,10 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 	nvt_touch_sysfs_deinit();
 	/* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 start */
 	if (ts->event_wq) {
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+		cancel_work_sync(&ts->resume_work);
+#endif
+		nvt_irq_enable(false);
 		cancel_work_sync(&ts->power_supply_work);
 		destroy_workqueue(ts->event_wq);
 		ts->event_wq = NULL;
@@ -4730,6 +4927,7 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 	free_irq(client->irq, ts);
 
 	mutex_destroy(&ts->xbuf_lock);
+	mutex_destroy(&ts->pen_lock);
 	mutex_destroy(&ts->lock);
 
 	nvt_gpio_deconfig(ts);
@@ -4834,6 +5032,10 @@ static void nvt_ts_shutdown(struct spi_device *client)
 /*P16 code for HQFEAT-89614 by liaoxianguo at 2025/4/3 end*/
 	/* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 start */
 	if (ts->event_wq) {
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+		cancel_work_sync(&ts->resume_work);
+#endif
+		nvt_irq_enable(false);
 		cancel_work_sync(&ts->power_supply_work);
 		destroy_workqueue(ts->event_wq);
 		ts->event_wq = NULL;
@@ -4956,6 +5158,7 @@ static int32_t nvt_ts_suspend(struct device *dev)
 
 	msleep(50);
 	mutex_unlock(&ts->lock);
+	ts->game_mode = false;
 
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
 
@@ -5075,8 +5278,21 @@ static int32_t nvt_ts_resume(struct device *dev)
 		}
 	}
 
-	if (ts->gesture_command)
-		nvt_set_gesture_switch(0x00);
+	ret = nvt_set_gesture_switch(0x00);
+	if (ret) {
+		nvt_read_fw_history_all();
+		ret = nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, true);
+		if (ret) {
+			NVT_ERR("gesture-clear recovery firmware update failed: %d\n", ret);
+		} else {
+			nvt_check_fw_reset_state(RESET_STATE_REK);
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+			nvt_fod_attn_status_recovery();
+#endif
+			/* Stock's final write has no further readback/reload loop. */
+			nvt_set_extend_custom_cmd(0x1e, 0);
+		}
+	}
 #if WAKEUP_GESTURE
 	if (ts->gesture_command == 0) {
 		nvt_irq_enable(true);
@@ -5096,6 +5312,8 @@ static int32_t nvt_ts_resume(struct device *dev)
 	if(ts->ic_state == NVT_STATE_RESUME_IN){
 		ts->ic_state = NVT_STATE_RESUME_OUT;
 	}
+	if (ts->pen_support)
+		nvt_restore_pen_state();
 	if(ts->gesture_command_delay >= 0){
 		nvt_set_gesture_mode(ts->gesture_command_delay);
 		ts->gesture_command_delay = -1;

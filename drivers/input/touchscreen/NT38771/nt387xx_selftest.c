@@ -2636,6 +2636,19 @@ Description:
 return:
 	Executive outcomes. 0---succeed. negative---failed.
 *******************************************************/
+static void nvt_selftest_restore_scan(void)
+{
+	WRITE_ONCE(ts->selftest_active, false);
+	if (!READ_ONCE(ts->selftest_scan_pending))
+		return;
+
+	if (nvt_set_extend_custom_cmd(0x19, 1) < 0)
+		NVT_ERR("selftest baseline restore failed\n");
+	if (nvt_set_extend_custom_cmd(0x01, 2) < 0)
+		NVT_ERR("selftest op-mode restore failed\n");
+	/* Stock leaves the pending flag set after restoration. */
+}
+
 static int32_t nvt_selftest_open(struct inode *inode, struct file *file)
 {
 	struct device_node *np = ts->client->dev.of_node;
@@ -2693,6 +2706,7 @@ static int32_t nvt_selftest_open(struct inode *inode, struct file *file)
 	nvt_esd_check_enable(false);
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 
+	WRITE_ONCE(ts->selftest_active, true);
 	//---Download MP FW---
 	if (nvt_update_firmware(MP_UPDATE_FIRMWARE_NAME, false) < 0) {
 		NVT_ERR("update mp firmware failed!\n");
@@ -2722,6 +2736,7 @@ static int32_t nvt_selftest_open(struct inode *inode, struct file *file)
 		if (nvt_mp_parse_dt(np, mpcriteria)) {
 			//---Download Normal FW---
 			nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+			nvt_selftest_restore_scan();
 			mutex_unlock(&ts->lock);
 			NVT_ERR("mp parse device tree failed!\n");
 			return -EINVAL;
@@ -2944,6 +2959,7 @@ static int32_t nvt_selftest_open(struct inode *inode, struct file *file)
 
 	//---Download Normal FW---
 	nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+	nvt_selftest_restore_scan();
 
 	mutex_unlock(&ts->lock);
 
@@ -2957,6 +2973,7 @@ failed_out:
 /*P16 code for BUGP16-3030 by xiongdejun at 2025/5/29 start*/
 	//---Download normal FW---
 	nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+	nvt_selftest_restore_scan();
 /*P16 code for BUGP16-3030 by xiongdejun at 2025/5/29 end*/
 	mutex_unlock(&ts->lock);
 
@@ -3775,6 +3792,7 @@ int nvt_factory_open_test(void){
 	nvt_esd_check_enable(false);
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 
+	WRITE_ONCE(ts->selftest_active, true);
 	//---Download MP FW---
 	if (nvt_update_firmware(MP_UPDATE_FIRMWARE_NAME, false) < 0) {
 		NVT_ERR("update mp firmware failed!\n");
@@ -3804,6 +3822,7 @@ int nvt_factory_open_test(void){
 		if (nvt_mp_parse_dt(np, mpcriteria)) {
 			//---Download Normal FW---
 			nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+			WRITE_ONCE(ts->selftest_active, false);
 			NVT_ERR("mp parse device tree failed!\n");
 			goto failed_out;
 		}
@@ -3881,6 +3900,7 @@ int nvt_factory_open_test(void){
 
 	//---Download Normal FW---
 	nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+	WRITE_ONCE(ts->selftest_active, false);
 	mutex_unlock(&ts->lock);
 	if (TestResult_Open == 0){
 			NVT_LOG("************All test pass!!!************");
@@ -3893,6 +3913,7 @@ failed_out:
 	nvt_read_fw_history_all();
 /*P16 code for BUGP16-3030 by xiongdejun at 2025/5/29 start*/
 	nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+	WRITE_ONCE(ts->selftest_active, false);
 /*P16 code for BUGP16-3030 by xiongdejun at 2025/5/29 end*/
 	mutex_unlock(&ts->lock);
   	return -EAGAIN;
@@ -3923,6 +3944,7 @@ int nvt_factory_short_test(void){
 	nvt_esd_check_enable(false);
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 
+	WRITE_ONCE(ts->selftest_active, true);
 	//---Download MP FW---
 	if (nvt_update_firmware(MP_UPDATE_FIRMWARE_NAME, false) < 0) {
 		NVT_ERR("update mp firmware failed!\n");
@@ -3952,6 +3974,7 @@ int nvt_factory_short_test(void){
 		if (nvt_mp_parse_dt(np, mpcriteria)) {
 			//---Download Normal FW---
 			nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+			WRITE_ONCE(ts->selftest_active, false);
 			mutex_unlock(&ts->lock);
 			NVT_ERR("mp parse device tree failed!\n");
 			goto failed_out;
@@ -4030,6 +4053,7 @@ int nvt_factory_short_test(void){
 
 	//---Download Normal FW---
 	nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+	WRITE_ONCE(ts->selftest_active, false);
 	mutex_unlock(&ts->lock);
 	if (TestResult_Short == 0){
 			NVT_LOG("************All test pass!!!************");
@@ -4042,6 +4066,7 @@ failed_out:
 	nvt_read_fw_history_all();
 /*P16 code for BUGP16-3030 by xiongdejun at 2025/5/29 start*/
 	nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+	WRITE_ONCE(ts->selftest_active, false);
 /*P16 code for BUGP16-3030 by xiongdejun at 2025/5/29 end*/
 	mutex_unlock(&ts->lock);
   	return -EAGAIN;

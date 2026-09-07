@@ -268,6 +268,13 @@ struct nvt_ts_data {
 	struct notifier_block charger_notifier;
 	struct work_struct charger_work;
 	int charger_status;
+	s16 report_rate;
+	bool selftest_active;
+	bool selftest_scan_pending;
+	bool doze_analysis_active;
+	bool touch_raw_enabled;
+	bool firmware_loading;
+	struct work_struct resume_work;
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 end */
 /*P16 code for BUGP16-6740 by liuyupei at 2025/7/1 start*/
 /*P16 code for BUGP16-7431 by liuyupei at 2025/7/8 start*/
@@ -287,6 +294,10 @@ struct nvt_ts_data {
 #endif
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
 	bool pen_support;
+	bool pen_enabled;
+	bool pen_inhibited;
+	bool game_mode;
+	struct mutex pen_lock;
 	bool is_cascade;
 	uint8_t pen_x_num_x;
 	uint8_t pen_x_num_y;
@@ -431,6 +442,7 @@ void nvt_ts_fod_up_report(void);
 int32_t nvt_set_gesture_switch(uint8_t gesture_switch);
 int32_t nvt_set_extend_custom_cmd(uint8_t command, uint16_t value);
 int32_t nvt_get_extend_custom_cmd(uint8_t command, uint16_t *value);
+void nvt_restore_pen_state(void);
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 start */
 int32_t nvt_set_charger_switch(uint8_t charger_switch);

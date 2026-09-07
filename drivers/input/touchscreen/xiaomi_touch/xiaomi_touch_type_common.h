@@ -241,13 +241,13 @@ typedef struct hardware_operation {
 	void (*switch_mode)(void);
 	void (*cmd_mode_update)(void);
 	void (*reserved_50[2])(void);
-	void (*enable_touch_raw)(void);
+	int (*enable_touch_raw)(int value);
 	void (*panel_vendor_read)(void);
 	void (*panel_color_read)(void);
 	void (*panel_display_read)(void);
 	void (*touch_vendor_read)(void);
 	void (*reserved_88)(void);
-	void (*touch_doze_analysis)(void);
+	int (*touch_doze_analysis)(int value);
 	void (*reserved_98)(void);
 	void (*display_suspend_ready)(void);
 	int (*htc_ic_set_mode_value)(common_data_t *data);

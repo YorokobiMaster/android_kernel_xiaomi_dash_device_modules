@@ -1388,8 +1388,91 @@ Description:
 return:
 	Executive outcomes. 0---succeed. -12---failed.
 *******************************************************/
+struct nvt_recovery_proc {
+	const char *name;
+	bool report_rate;
+	bool read_finished;
+	struct proc_dir_entry *entry;
+};
+
+static struct nvt_recovery_proc nvt_recovery_procs[] = {
+	{ .name = "xm_htc_sw_reset" },
+	{ .name = "xm_htc_report_rate", .report_rate = true },
+};
+
+static ssize_t nvt_recovery_proc_read(struct file *file, char __user *buf,
+				     size_t count, loff_t *pos)
+{
+	struct nvt_recovery_proc *node = pde_data(file_inode(file));
+	char output[64] = { 0 };
+	u16 value = 0;
+	int len;
+
+	/* Preserve stock's shared alternating-read flag and fixed-size copy. */
+	if (node->read_finished) {
+		node->read_finished = false;
+		return 0;
+	}
+	node->read_finished = true;
+	if (mutex_lock_interruptible(&ts->lock))
+		return -ERESTARTSYS;
+	if (node->report_rate)
+		nvt_get_extend_custom_cmd(0x0a, &value);
+	else
+		value = READ_ONCE(ts->firmware_loading);
+	mutex_unlock(&ts->lock);
+	len = snprintf(output, sizeof(output), "%s: %d\n",
+		       node->report_rate ? "report_rate" : "sw_reset", (s16)value);
+	if (copy_to_user(buf, output, sizeof(output)))
+		return -EFAULT;
+	return len;
+}
+
+static ssize_t nvt_recovery_proc_write(struct file *file, const char __user *buf,
+				      size_t count, loff_t *pos)
+{
+	struct nvt_recovery_proc *node = pde_data(file_inode(file));
+	char *input;
+	int value, ret;
+
+	if (!count || count > (node->report_rate ? 6 : 2))
+		return -EINVAL;
+	input = kzalloc(count + 1, GFP_KERNEL);
+	if (!input)
+		return -ENOMEM;
+	if (copy_from_user(input, buf, count)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	if (sscanf(input, "%d", &value) != 1) {
+		ret = -EINVAL;
+		goto out;
+	}
+	if (mutex_lock_interruptible(&ts->lock)) {
+		ret = -ERESTARTSYS;
+		goto out;
+	}
+	/* Neither proc write updates the HAL report-rate cache. */
+	if (node->report_rate)
+		nvt_set_extend_custom_cmd(0x0a, (s16)value);
+	else if ((s16)value)
+		nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
+	mutex_unlock(&ts->lock);
+	ret = count;
+out:
+	kfree(input);
+	return ret;
+}
+
+static const struct proc_ops nvt_recovery_proc_ops = {
+	.proc_read = nvt_recovery_proc_read,
+	.proc_write = nvt_recovery_proc_write,
+};
+
 int32_t nvt_extra_proc_init(void)
 {
+	int i;
+
 	NVT_proc_fw_version_entry = proc_create(NVT_FW_VERSION, 0444, NULL,&nvt_fw_version_fops);
 	if (NVT_proc_fw_version_entry == NULL) {
 		NVT_ERR("create proc/%s Failed!\n", NVT_FW_VERSION);
@@ -1519,6 +1602,17 @@ NVT_proc_pocket_palm_switch_entry = proc_create(NVT_POCKET_PALM_SWITCH, 0666, NU
 		NVT_LOG("create proc/%s Succeeded!\n", NONTHP_TOUCH_NODE);
 	}
 /*P16 bug fot BUGP16-11893 by xiongdejun at 2025/8/25 end*/
+	for (i = 0; i < ARRAY_SIZE(nvt_recovery_procs); i++) {
+		nvt_recovery_procs[i].entry = proc_create_data(nvt_recovery_procs[i].name,
+				0666, NULL, &nvt_recovery_proc_ops, &nvt_recovery_procs[i]);
+		if (!nvt_recovery_procs[i].entry) {
+			while (i--) {
+				proc_remove(nvt_recovery_procs[i].entry);
+				nvt_recovery_procs[i].entry = NULL;
+			}
+			return -ENOMEM;
+		}
+	}
 	return 0;
 }
 
@@ -1532,6 +1626,12 @@ return:
 *******************************************************/
 void nvt_extra_proc_deinit(void)
 {
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(nvt_recovery_procs); i++) {
+		proc_remove(nvt_recovery_procs[i].entry);
+		nvt_recovery_procs[i].entry = NULL;
+	}
 	if (NVT_proc_fw_version_entry != NULL) {
 		remove_proc_entry(NVT_FW_VERSION, NULL);
 		NVT_proc_fw_version_entry = NULL;

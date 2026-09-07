@@ -110,6 +110,8 @@ static_assert(offsetof(hardware_param_t, temperature_change_threshold) == 0xd5);
 static_assert(sizeof(hardware_operation_t) == 31 * sizeof(void *));
 static_assert(offsetof(hardware_operation_t, set_cur_value) ==
 		4 * sizeof(void *));
+static_assert(offsetof(hardware_operation_t, enable_touch_raw) == 0x60);
+static_assert(offsetof(hardware_operation_t, touch_doze_analysis) == 0x90);
 static_assert(offsetof(hardware_operation_t, display_suspend_ready) ==
 		20 * sizeof(void *));
 static_assert(offsetof(hardware_operation_t, resume_suspend) ==
@@ -1292,26 +1294,28 @@ static ssize_t touch_ic_buffer_show(struct device *dev,
 	tmp_buf = NULL;
 	return count;
 }
+static int touch_doze_analysis_result;
+
 static ssize_t touch_doze_analysis_show(struct device *dev,
 			struct device_attribute *attr, char *buf)
 {
-	struct xiaomi_touch_pdata *pdata = dev_get_drvdata(dev);
-	if (pdata->touch_data[0]->touch_doze_analysis)
-		return snprintf(buf, PAGE_SIZE, "%d\n", pdata->touch_data[0]->touch_doze_analysis(IRQ_PIN_LEVEL));
-	else
-		return 0;
+	return sysfs_emit(buf, "%d\n", touch_doze_analysis_result);
 }
 static ssize_t touch_doze_analysis_store(struct device *dev,
 			struct device_attribute *attr, const char *buf, size_t count)
 {
-	int input;
+	int input = 0, i;
 	struct xiaomi_touch_pdata *pdata = dev_get_drvdata(dev);
 	if (sscanf(buf, "%d", &input) < 0)
 		return -EINVAL;
-	if (pdata->touch_data[0]->touch_doze_analysis)
-		pdata->touch_data[0]->touch_doze_analysis(input);
-	else
-		mi_ts_err("has not implement\n");
+	for (i = 0; i < ARRAY_SIZE(touch_panel_data); i++) {
+		if (touch_panel_data[i].registered &&
+		    touch_panel_data[i].hardware_operation.touch_doze_analysis)
+			touch_doze_analysis_result =
+				touch_panel_data[i].hardware_operation.touch_doze_analysis(input);
+		else if (pdata->touch_data[i] && pdata->touch_data[i]->touch_doze_analysis)
+			touch_doze_analysis_result = pdata->touch_data[i]->touch_doze_analysis(input);
+	}
 	mi_ts_info("value:%d\n", input);
 	return count;
 }
@@ -1452,14 +1456,17 @@ static ssize_t enable_touchraw_store(struct device *dev,
 				struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct xiaomi_touch_interface *touch_data = NULL;
-	unsigned int input;
+	int input = 0;
 	if (!touch_pdata)
 		return -ENOMEM;
 	touch_data = touch_pdata->touch_data[0];
 	if (sscanf(buf, "%d", &input) < 0)
 		return -EINVAL;
 	mi_ts_info("%d\n", input);
-	if (touch_data->enable_touch_raw)
+	if (touch_panel_data[0].registered &&
+	    touch_panel_data[0].hardware_operation.enable_touch_raw)
+		touch_panel_data[0].hardware_operation.enable_touch_raw(input);
+	else if (touch_data->enable_touch_raw)
 		touch_data->enable_touch_raw(!!input);
 	touch_data->is_enable_touchraw = !!input;
 	touch_pdata->raw_tail = 0;
