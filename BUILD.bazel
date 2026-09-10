@@ -54,6 +54,7 @@ load("//kernel_device_modules-6.6:kernel/kleaf/mgk_64.bzl",
 
 define_mgk(
     name = "mgk_64_k66",
+    clang_autofdo_profile = "@dash_kernel_profiles//:aarch64/android15-6.6/kernel.afdo",
     defconfig = mgk_64_defconfig,
     kleaf_modules = mgk_64_kleaf_modules,
     kleaf_eng_modules = mgk_64_kleaf_eng_modules,
