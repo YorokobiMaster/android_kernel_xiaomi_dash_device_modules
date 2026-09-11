@@ -5280,6 +5280,7 @@ static int32_t nvt_ts_resume(struct device *dev)
 	int32_t ret;
 	bool display_esd_recovery = false;
 	bool reload_firmware = true;
+	bool hold_wakeup = false;
 
 #if IS_ENABLED(CONFIG_MI_DISP_NOTIFIER)
 	nvt_ts_display_esd_flag(&display_esd_recovery);
@@ -5291,6 +5292,11 @@ static int32_t nvt_ts_resume(struct device *dev)
 /*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 start*/
 	ts->nvt_tool_in_use = false;
 /*P16 code for BUGP16-584 by xiongdejun at 2025/5/27 end*/
+#if NVT_PM_WAIT_BUS_RESUME_COMPLETE
+	hold_wakeup = ts->dev_pm_suspend;
+#endif
+	if (hold_wakeup)
+		pm_stay_awake(dev);
 	ts->ic_state = NVT_STATE_RESUME_IN;
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 	NVT_LOG("start, gesture_command:0x%02x, fod_finger: %d\n", ts->gesture_command, ts->fod_finger);
@@ -5303,6 +5309,8 @@ static int32_t nvt_ts_resume(struct device *dev)
 		ret = pinctrl_select_state(ts->pinctrl, ts->pinctrl_active);
 		if (ret) {
 			mutex_unlock(&ts->lock);
+			if (hold_wakeup)
+				pm_relax(dev);
 			return dev_err_probe(&ts->client->dev, ret,
 					     "failed to select pmx_ts_active\n");
 		}
@@ -5394,6 +5402,8 @@ static int32_t nvt_ts_resume(struct device *dev)
 	NVT_LOG("nvt charger mode is %d in resume\n",ts->charger_status_store);
 	mutex_unlock(&ts->lock);
 /*P16 code for BUGP16-3227 by p-liaoxianguo at 2025/6/4 end*/
+	if (hold_wakeup)
+		pm_relax(dev);
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
 	enable_temperature_detection_func(true);
 	nvt_set_thermal_temp(0, true);
