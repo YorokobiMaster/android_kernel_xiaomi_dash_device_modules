@@ -3806,7 +3806,7 @@ static int nvt_set_thp_cur_value(int mode, int *values)
 		return update_fod_press_status(value);
 	}
 	if (mode == THP_FOD_ATTN_STATUS) {
-		if (ts->nvt_tool_in_use || ts->fod_low_attn)
+		if (ts->game_mode || ts->fod_low_attn)
 			return 0;
 
 		value = values[0];
