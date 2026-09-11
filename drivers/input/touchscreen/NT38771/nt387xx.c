@@ -3368,8 +3368,21 @@ static int nvt_set_cur_value(int nvt_mode, int nvt_value)
 /*P16 code for HQFEAT-89543 by xiongdejun at 2025/6/20 end*/
 /*P16 code for BUGP16-7026 by liuyupei at 2025/7/1 start*/
 	if (nvt_mode == Touch_Nonui_Mode && nvt_value >= 0){
+		bool send_nonui = !bTouchIsAwake && ts->gesture_command &&
+				  ts->nonui_status != nvt_value;
+		int nonui_ret;
+
 		ts->nonui_status = nvt_value;
 		NVT_LOG("nonui mode is %d",nvt_value);
+		if (send_nonui) {
+			mutex_lock(&ts->lock);
+			pm_stay_awake(&ts->client->dev);
+			nonui_ret = nvt_set_extend_custom_cmd(0x25, nvt_value);
+			pm_relax(&ts->client->dev);
+			mutex_unlock(&ts->lock);
+			if (nonui_ret < 0)
+				NVT_ERR("set nonui mode failed: %d\n", nonui_ret);
+		}
 		return 0;
 	}
 /*P16 code for BUGP16-7026 by liuyupei at 2025/7/1 end*/
