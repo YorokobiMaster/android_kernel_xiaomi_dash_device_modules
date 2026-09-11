@@ -1390,15 +1390,55 @@ return:
 *******************************************************/
 struct nvt_recovery_proc {
 	const char *name;
-	bool report_rate;
+	const char *label;
+	u8 command;
+	u8 max_write;
+	bool write_only;
 	bool read_finished;
 	struct proc_dir_entry *entry;
 };
 
+#define NVT_HTC_NODE(node_name, cmd, size) \
+	{ .name = "xm_htc_" #node_name, .label = #node_name, .command = cmd, .max_write = size }
 static struct nvt_recovery_proc nvt_recovery_procs[] = {
-	{ .name = "xm_htc_sw_reset" },
-	{ .name = "xm_htc_report_rate", .report_rate = true },
+	NVT_HTC_NODE(op_mode, 0x01, 2),
+	NVT_HTC_NODE(idle_wake_th, 0x02, 6),
+	NVT_HTC_NODE(stylus_enable, 0x04, 2),
+	NVT_HTC_NODE(stylus_only, 0x05, 2),
+	NVT_HTC_NODE(raw_data_type, 0x06, 2),
+	NVT_HTC_NODE(gesture_switch, 0x1e, 2),
+	NVT_HTC_NODE(sw_reset, 0x00, 2),
+	NVT_HTC_NODE(fh_enable, 0x07, 2),
+	NVT_HTC_NODE(scan_freq_no, 0x08, 2),
+	NVT_HTC_NODE(scan_freq, 0x09, 0),
+	NVT_HTC_NODE(report_rate, 0x0a, 6),
+	NVT_HTC_NODE(pen_scan_rate, 0x0b, 0),
+	NVT_HTC_NODE(mc_calibration_en, 0x0c, 2),
+	NVT_HTC_NODE(int_state, 0x0d, 2),
+	NVT_HTC_NODE(single_step, 0x0e, 2),
+	NVT_HTC_NODE(game_mode, 0x0f, 2),
+	NVT_HTC_NODE(charger, 0x10, 2),
+	NVT_HTC_NODE(gesture_dbclk, 0x11, 2),
+	NVT_HTC_NODE(flg_buf, 0x12, 6),
+	NVT_HTC_NODE(ic_log_level, 0x13, 2),
+	NVT_HTC_NODE(filter_level, 0x14, 2),
+	NVT_HTC_NODE(report_coordinate, 0x15, 2),
+	{ .name = "xm_htc_idle_baseline_update", .label = "idle baseline update",
+	  .command = 0x19, .max_write = 2 },
+	NVT_HTC_NODE(fod_enable, 0x1a, 2),
+	NVT_HTC_NODE(click_gesture_enable, 0x1b, 2),
+	NVT_HTC_NODE(base_refresh_enable, 0x1c, 2),
+	NVT_HTC_NODE(thp_base_trace_flag, 0x1d, 2),
+	NVT_HTC_NODE(idle_high_base_en, 0x1f, 2),
+	NVT_HTC_NODE(mc_scan_en, 0x23, 2),
+	NVT_HTC_NODE(sc_scan_en, 0x24, 2),
+	{ .name = "xm_htc_nonui_tp_on_off", .command = 0x25,
+	  .max_write = 2, .write_only = true },
+	{ .name = "xm_htc_temperature", .command = 0x29,
+	  .max_write = 7, .write_only = true },
+	NVT_HTC_NODE(fod_attn_status, 0x28, 2),
 };
+#undef NVT_HTC_NODE
 
 static ssize_t nvt_recovery_proc_read(struct file *file, char __user *buf,
 				     size_t count, loff_t *pos)
@@ -1416,13 +1456,13 @@ static ssize_t nvt_recovery_proc_read(struct file *file, char __user *buf,
 	node->read_finished = true;
 	if (mutex_lock_interruptible(&ts->lock))
 		return -ERESTARTSYS;
-	if (node->report_rate)
-		nvt_get_extend_custom_cmd(0x0a, &value);
+	if (node->command)
+		nvt_get_extend_custom_cmd(node->command, &value);
 	else
 		value = READ_ONCE(ts->firmware_loading);
 	mutex_unlock(&ts->lock);
 	len = snprintf(output, sizeof(output), "%s: %d\n",
-		       node->report_rate ? "report_rate" : "sw_reset", (s16)value);
+		       node->label, (s16)value);
 	if (copy_to_user(buf, output, sizeof(output)))
 		return -EFAULT;
 	return len;
@@ -1435,7 +1475,7 @@ static ssize_t nvt_recovery_proc_write(struct file *file, const char __user *buf
 	char *input;
 	int value, ret;
 
-	if (!count || count > (node->report_rate ? 6 : 2))
+	if (!count || count > node->max_write)
 		return -EINVAL;
 	input = kzalloc(count + 1, GFP_KERNEL);
 	if (!input)
@@ -1452,9 +1492,12 @@ static ssize_t nvt_recovery_proc_write(struct file *file, const char __user *buf
 		ret = -ERESTARTSYS;
 		goto out;
 	}
-	/* Neither proc write updates the HAL report-rate cache. */
-	if (node->report_rate)
-		nvt_set_extend_custom_cmd(0x0a, (s16)value);
+	/* Proc commands do not update the HAL mode caches. */
+	if (node->command == 0x15)
+		ts->report_coordinate = (s16)value != 0;
+	if (node->command)
+		nvt_set_extend_custom_cmd(node->command,
+					  node->command == 0x19 ? 1 : (s16)value);
 	else if ((s16)value)
 		nvt_update_firmware(BOOT_UPDATE_FIRMWARE_NAME, false);
 	mutex_unlock(&ts->lock);
@@ -1466,6 +1509,14 @@ out:
 
 static const struct proc_ops nvt_recovery_proc_ops = {
 	.proc_read = nvt_recovery_proc_read,
+	.proc_write = nvt_recovery_proc_write,
+};
+
+static const struct proc_ops nvt_htc_read_only_ops = {
+	.proc_read = nvt_recovery_proc_read,
+};
+
+static const struct proc_ops nvt_htc_write_only_ops = {
 	.proc_write = nvt_recovery_proc_write,
 };
 
@@ -1603,8 +1654,14 @@ NVT_proc_pocket_palm_switch_entry = proc_create(NVT_POCKET_PALM_SWITCH, 0666, NU
 	}
 /*P16 bug fot BUGP16-11893 by xiongdejun at 2025/8/25 end*/
 	for (i = 0; i < ARRAY_SIZE(nvt_recovery_procs); i++) {
+		const struct proc_ops *ops = &nvt_recovery_proc_ops;
+
+		if (nvt_recovery_procs[i].write_only)
+			ops = &nvt_htc_write_only_ops;
+		else if (!nvt_recovery_procs[i].max_write)
+			ops = &nvt_htc_read_only_ops;
 		nvt_recovery_procs[i].entry = proc_create_data(nvt_recovery_procs[i].name,
-				0666, NULL, &nvt_recovery_proc_ops, &nvt_recovery_procs[i]);
+				0666, NULL, ops, &nvt_recovery_procs[i]);
 		if (!nvt_recovery_procs[i].entry) {
 			while (i--) {
 				proc_remove(nvt_recovery_procs[i].entry);

@@ -297,6 +297,7 @@ struct nvt_ts_data {
 	bool pen_enabled;
 	bool pen_inhibited;
 	bool game_mode;
+	bool report_coordinate;
 	struct mutex pen_lock;
 	bool is_cascade;
 	uint8_t pen_x_num_x;
