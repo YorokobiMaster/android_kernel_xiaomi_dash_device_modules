@@ -362,7 +362,6 @@ struct nvt_ts_data {
 /* P16 code for HQFEAT-94432 by p-liaoxianguo at 2025/4/29 end */
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 start*/
 	bool fod_finger;
-	bool thp_fod_downup;
 	int fod_low_attn;
 	int fod_attn_status;
 	int fingerprint_auth_state;

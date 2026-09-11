@@ -2527,7 +2527,7 @@ static int nvt_report_thp_frame(void)
 
 	frame->timestamp_ns = ktime_get_real_ns();
 	frame->frame_count = ts->thp_frame_count++;
-	frame->frame_type = 0;
+	frame->frame_type = ts->fod_finger; /* Stock frame header carries FOD state. */
 	frame->status = 0;
 	memcpy(frame->tp_raw, ts->thp_frame_buf + 0x101, NVT_THP_DATA_LEN);
 	notify_raw_data_update_common(0);
@@ -3768,7 +3768,7 @@ static int nvt_set_thp_cur_value(int mode, int *values)
 	}
 	if (mode == THP_FOD_DOWNUP_CTL) {
 		value = !!values[0];
-		ts->thp_fod_downup = value;
+		ts->fod_finger = value;
 		input_report_key(ts->input_dev, BTN_INFO, value);
 		input_sync(ts->input_dev);
 		NVT_LOG("THP_FOD_DOWNUP_CTL=%d\n", value);
