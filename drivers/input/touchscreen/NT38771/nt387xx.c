@@ -684,6 +684,36 @@ Description:
 return:
 	n.a.
 *******************************************************/
+void nvt_bootloader_reset_resx_decouple(void)
+{
+	uint32_t addr = ts->mmap->RESX_DECOUPLE_ADDR;
+	uint8_t buf[3];
+	int i;
+
+	nvt_write_addr(ts->swrst_sif_addr, 0x69);
+	if (addr) {
+		udelay(500);
+		for (i = 0; i < 3; i++) {
+			nvt_set_page(addr);
+			buf[0] = addr & 0x7F;
+			buf[1] = 0xAA;
+			buf[2] = 0x55;
+			CTP_SPI_WRITE(ts->client, buf, sizeof(buf));
+			buf[0] = addr & 0x7F;
+			buf[1] = 0;
+			buf[2] = 0;
+			CTP_SPI_READ(ts->client, buf, sizeof(buf));
+			NVT_LOG("retry %d, resx decouple: %02X %02X\n",
+				i, buf[1], buf[2]);
+			if (buf[1] == 0xAA && buf[2] == 0x55)
+				break;
+			usleep_range(25000, 25100);
+		}
+	}
+	mdelay(5);
+	NVT_LOG("end\n");
+}
+
 void nvt_bootloader_reset(void)
 {
 	//---reset cmds to SWRST_SIF_ADDR---

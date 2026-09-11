@@ -451,6 +451,7 @@ int32_t nvt_set_charger_switch(uint8_t charger_switch);
 int32_t CTP_SPI_READ(struct spi_device *client, uint8_t *buf, uint16_t len);
 int32_t CTP_SPI_WRITE(struct spi_device *client, uint8_t *buf, uint16_t len);
 void nvt_bootloader_reset(void);
+void nvt_bootloader_reset_resx_decouple(void);
 void nvt_sw_reset_idle(void);
 void nvt_boot_ready(void);
 void nvt_fw_crc_enable(void);

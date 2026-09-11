@@ -670,7 +670,7 @@ static int32_t nvt_download_firmware_hw_crc(uint8_t skip_update_ilm)
 
 	while (1) {
 		/* bootloader reset to reset MCU */
-		nvt_bootloader_reset();
+		nvt_bootloader_reset_resx_decouple();
 
 		/* check ilm crc if skip_update_ilm */
 		if (skip_update_ilm == true) {

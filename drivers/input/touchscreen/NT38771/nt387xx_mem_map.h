@@ -80,6 +80,7 @@ struct nvt_ts_mem_map {
 	uint32_t PH2_FLASH_EXIST_CODE_ADDR;
 	nvt_ts_reg_t NORFW_HEADER_CRC_DONE_ADDR;
 	nvt_ts_reg_t NORFW_FINAL_HEADER_DONE_ADDR;
+	uint32_t RESX_DECOUPLE_ADDR;
 };
 
 struct nvt_ts_hw_info {
@@ -164,6 +165,7 @@ static const struct nvt_ts_mem_map NT38771_memory_map = {
 	.PH2_FLASH_EXIST_CODE_ADDR    = 0x3FACB,
 	.NORFW_HEADER_CRC_DONE_ADDR   = {.addr = 0x3F128, .mask = 1},
 	.NORFW_FINAL_HEADER_DONE_ADDR = {.addr = 0x3F128, .mask = 2},
+	.RESX_DECOUPLE_ADDR           = 0x3F8D4,
 };
 
 static struct nvt_ts_hw_info NT38771_hw_info = {
