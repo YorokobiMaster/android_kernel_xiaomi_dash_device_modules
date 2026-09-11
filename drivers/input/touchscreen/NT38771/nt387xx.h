@@ -469,6 +469,7 @@ int32_t nvt_check_fw_reset_state(RST_COMPLETE_STATE check_reset_state);
 int32_t nvt_get_fw_info(void);
 int nvt_factory_short_test(void);
 int nvt_factory_open_test(void);
+int nvt_limit_version_read(char *version);
 int32_t nvt_get_xm_htc_poll_info(void);
 int32_t nvt_clear_fw_status(void);
 int32_t nvt_check_fw_status(void);

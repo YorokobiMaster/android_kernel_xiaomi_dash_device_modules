@@ -356,7 +356,6 @@ static void xiaomi_touch_format_info(struct xiaomi_touch_panel_data *panel,
 		len = snprintf(buf, size, "fw version: %s\ndriver version: %s\nhal version: %s\n"
 			   "xiaomi-touch version: %s\n", param->fw_version,
 			   param->driver_version, panel->hal_version, "2025.04.30-01");
-		/* The CSV-backed limit callback remains absent until A42. */
 		if (ops->limit_version_read) {
 			ops->limit_version_read(panel->limit_version);
 			len += snprintf(buf + len, size - len, "limit csv version: %s\n",

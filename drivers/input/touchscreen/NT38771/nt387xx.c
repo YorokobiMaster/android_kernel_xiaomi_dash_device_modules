@@ -4021,6 +4021,7 @@ static const hardware_operation_t nvt_hardware_operation = {
 	.self_test = nvt_ic_self_test,
 	.lockdown_info_read = nvt_ic_lockdown_info_read,
 	.get_fw_version = nvt_ic_get_fw_version,
+	.limit_version_read = nvt_limit_version_read,
 	.set_cur_value = nvt_set_thp_cur_value,
 	.enable_touch_raw = nvt_enable_touch_raw,
 	.touch_doze_analysis = nvt_touch_doze_analysis,

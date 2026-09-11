@@ -19,6 +19,8 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/firmware.h>
+#include <linux/vmalloc.h>
 
 #include "nt387xx.h"
 #include "nt387xx_selftest.h"
@@ -26,6 +28,202 @@
 #if NVT_TOUCH_MP
 
 #define NORMAL_MODE 0x00
+
+/* Stock table order matters: a failed item leaves earlier writes in place. */
+static char Limit_Version[30];
+static char nvt_limit_version[30];
+static const struct {
+	const char *name;
+	void *value;
+	u8 type;
+} nvt_mp_criteria_items[] = {
+	{ "Limit_Version:", Limit_Version, 0 },
+	{ "PS_Config_Lmt_Short_TXRX_P:", PS_Config_Lmt_Short_TXRX_P, 2 },
+	{ "PS_Config_Lmt_Short_TXRX_N:", PS_Config_Lmt_Short_TXRX_N, 2 },
+	{ "PS_Config_Lmt_Short_TXTX_P:", PS_Config_Lmt_Short_TXTX_P, 5 },
+	{ "PS_Config_Lmt_Short_TXTX_N:", PS_Config_Lmt_Short_TXTX_N, 5 },
+	{ "PS_Config_Lmt_Short_RXRX_P:", PS_Config_Lmt_Short_RXRX_P, 6 },
+	{ "PS_Config_Lmt_Short_RXRX_N:", PS_Config_Lmt_Short_RXRX_N, 6 },
+	{ "PS_Config_Lmt_Open_Mutual_P:", PS_Config_Lmt_Open_Mutual_P, 2 },
+	{ "PS_Config_Lmt_Open_Mutual_N:", PS_Config_Lmt_Open_Mutual_N, 2 },
+	{ "PS_Config_Lmt_Open_SelfTX_P:", PS_Config_Lmt_Open_SelfTX_P, 5 },
+	{ "PS_Config_Lmt_Open_SelfTX_N:", PS_Config_Lmt_Open_SelfTX_N, 5 },
+	{ "PS_Config_Lmt_Open_SelfRX_P:", PS_Config_Lmt_Open_SelfRX_P, 6 },
+	{ "PS_Config_Lmt_Open_SelfRX_N:", PS_Config_Lmt_Open_SelfRX_N, 6 },
+	{ "PS_Config_Lmt_FW_Rawdata_P:", PS_Config_Lmt_FW_Rawdata_P, 2 },
+	{ "PS_Config_Lmt_FW_Rawdata_N:", PS_Config_Lmt_FW_Rawdata_N, 2 },
+	{ "PS_Config_Lmt_FW_CC_P:", PS_Config_Lmt_FW_CC_P, 2 },
+	{ "PS_Config_Lmt_FW_CC_N:", PS_Config_Lmt_FW_CC_N, 2 },
+	{ "PS_Config_Lmt_FW_Diff_P:", PS_Config_Lmt_FW_Diff_P, 2 },
+	{ "PS_Config_Lmt_FW_Diff_N:", PS_Config_Lmt_FW_Diff_N, 2 },
+	{ "PS_Config_Lmt_FW_Digital_Diff_P:", PS_Config_Lmt_FW_Digital_Diff_P, 2 },
+	{ "PS_Config_Lmt_FW_Digital_Diff_N:", PS_Config_Lmt_FW_Digital_Diff_N, 2 },
+	{ "PS_Config_Lmt_FlatnessValueOper1_P:", PS_Config_Lmt_FlatnessValueOper1_P, 7 },
+	{ "PS_Config_Lmt_FlatnessValueOper1_N:", PS_Config_Lmt_FlatnessValueOper1_N, 7 },
+	{ "PS_Config_Lmt_PenTipX_FW_Raw_P:", PS_Config_Lmt_PenTipX_FW_Raw_P, 3 },
+	{ "PS_Config_Lmt_PenTipX_FW_Raw_N:", PS_Config_Lmt_PenTipX_FW_Raw_N, 3 },
+	{ "PS_Config_Lmt_PenTipY_FW_Raw_P:", PS_Config_Lmt_PenTipY_FW_Raw_P, 4 },
+	{ "PS_Config_Lmt_PenTipY_FW_Raw_N:", PS_Config_Lmt_PenTipY_FW_Raw_N, 4 },
+	{ "PS_Config_Lmt_PenRingX_FW_Raw_P:", PS_Config_Lmt_PenRingX_FW_Raw_P, 3 },
+	{ "PS_Config_Lmt_PenRingX_FW_Raw_N:", PS_Config_Lmt_PenRingX_FW_Raw_N, 3 },
+	{ "PS_Config_Lmt_PenRingY_FW_Raw_P:", PS_Config_Lmt_PenRingY_FW_Raw_P, 4 },
+	{ "PS_Config_Lmt_PenRingY_FW_Raw_N:", PS_Config_Lmt_PenRingY_FW_Raw_N, 4 },
+	{ "PS_Config_Lmt_PenTipX_FW_Diff_P:", PS_Config_Lmt_PenTipX_FW_Diff_P, 3 },
+	{ "PS_Config_Lmt_PenTipX_FW_Diff_N:", PS_Config_Lmt_PenTipX_FW_Diff_N, 3 },
+	{ "PS_Config_Lmt_PenTipY_FW_Diff_P:", PS_Config_Lmt_PenTipY_FW_Diff_P, 4 },
+	{ "PS_Config_Lmt_PenTipY_FW_Diff_N:", PS_Config_Lmt_PenTipY_FW_Diff_N, 4 },
+	{ "PS_Config_Lmt_PenRingX_FW_Diff_P:", PS_Config_Lmt_PenRingX_FW_Diff_P, 3 },
+	{ "PS_Config_Lmt_PenRingX_FW_Diff_N:", PS_Config_Lmt_PenRingX_FW_Diff_N, 3 },
+	{ "PS_Config_Lmt_PenRingY_FW_Diff_P:", PS_Config_Lmt_PenRingY_FW_Diff_P, 4 },
+	{ "PS_Config_Lmt_PenRingY_FW_Diff_N:", PS_Config_Lmt_PenRingY_FW_Diff_N, 4 },
+	{ "PS_Config_Diff_Test_Frame:", &PS_Config_Diff_Test_Frame, 1 },
+	{ "PS_Config_Digital_Diff_Test_Frame:", &PS_Config_Digital_Diff_Test_Frame, 1 },
+};
+
+static int nvt_parse_mp_csv_array(char **cursor, const char *name,
+				 int32_t *values, int columns, int rows)
+{
+	char *line, *p, *token, *next;
+	int row, column;
+	size_t len;
+	int ret = -EINVAL;
+
+	if (!columns || !rows)
+		return -EINVAL;
+	line = kmalloc(449, GFP_KERNEL);
+	if (!line)
+		return -ENOMEM;
+	p = strstr(*cursor, name);
+	if (!p)
+		goto out;
+	*cursor = p;
+	for (row = 0; row < rows; row++) {
+		while (**cursor != '\n')
+			(*cursor)++;
+		(*cursor)++;
+		memset(line, 0, 449);
+		len = 0;
+		do {
+			BUG_ON(len >= 448);
+			line[len] = (*cursor)[len];
+			len++;
+		} while ((*cursor)[len] != '\r' && (*cursor)[len] != '\n');
+		line[len] = '\0';
+		next = line;
+		column = 0;
+		while ((token = strsep(&next, ", \t\r")) != NULL) {
+			if (!*token)
+				continue;
+			/* Stock checks the column count after writing the row. */
+			values[row * columns + column++] = simple_strtol(token, NULL, 10);
+		}
+		if (column != columns) {
+			ret = -1;
+			goto out;
+		}
+		*cursor += len;
+	}
+	ret = 0;
+out:
+	kfree(line);
+	return ret;
+}
+
+static int nvt_parse_mp_csv(char *data, size_t size)
+{
+	char *cursor = data, *p, *end;
+	int i, ret, columns, rows;
+
+	for (i = 0; i < ARRAY_SIZE(nvt_mp_criteria_items); i++) {
+		const char *name = nvt_mp_criteria_items[i].name;
+		void *value = nvt_mp_criteria_items[i].value;
+		u8 type = nvt_mp_criteria_items[i].type;
+
+		if (!cursor || cursor >= data + size)
+			return 0;
+		cursor = data;
+		if (type == 0 || type == 1) {
+			p = strstr(cursor, name);
+			if (!p)
+				return -1;
+			while (*p != '\n')
+				p++;
+			cursor = p + 1;
+			if (type == 0) {
+				end = strchr(cursor, ',');
+				if (!end)
+					return -1;
+				memcpy(value, cursor, end - cursor);
+				((char *)value)[end - cursor] = '\0';
+			} else {
+				sscanf(cursor, "%d,", (int32_t *)value);
+			}
+			continue;
+		}
+		columns = ts->x_num;
+		rows = ts->y_num;
+		switch (type) {
+		case 3:
+		case 4:
+			if (!ts->pen_support)
+				continue;
+			columns = type == 3 ? ts->pen_x_num_x : ts->pen_y_num_x;
+			rows = type == 3 ? ts->pen_x_num_y : ts->pen_y_num_y;
+			break;
+		case 5:
+			rows = 1;
+			break;
+		case 6:
+			columns = 1;
+			break;
+		case 7:
+			columns = 4;
+			rows = 1;
+			break;
+		}
+		ret = nvt_parse_mp_csv_array(&cursor, name, value, columns, rows);
+		if (ret < 0)
+			return -1;
+	}
+	memcpy(nvt_limit_version, Limit_Version, sizeof(nvt_limit_version));
+	return 0;
+}
+
+static int nvt_load_mp_setting_criteria_from_csv(void)
+{
+	const struct firmware *fw;
+	char name[64], *data;
+	int ret;
+
+	snprintf(name, sizeof(name), "MP_Setting_Criteria_%04X.csv", ts->nvt_pid);
+	ret = request_firmware(&fw, name, &ts->client->dev);
+	if (ret) {
+		NVT_ERR("request %s failed: %d\n", name, ret);
+		return -1;
+	}
+	data = vmalloc(fw->size + 2);
+	if (!data) {
+		release_firmware(fw);
+		return -2;
+	}
+	memcpy(data, fw->data, fw->size);
+	data[fw->size] = '\0';
+	data[fw->size + 1] = '\n';
+	ret = nvt_parse_mp_csv(data, fw->size);
+	release_firmware(fw);
+	vfree(data);
+	return ret;
+}
+
+int nvt_limit_version_read(char *version)
+{
+	int ret = nvt_load_mp_setting_criteria_from_csv();
+
+	if (!ret)
+		memcpy(version, nvt_limit_version, sizeof(nvt_limit_version));
+	return ret;
+}
+
 #define TEST_MODE_2 0x22
 #define MP_MODE_CC 0x41
 #define FREQ_HOP_DISABLE 0x66
@@ -2721,8 +2919,13 @@ static int32_t nvt_selftest_open(struct inode *inode, struct file *file)
 	fw_ver = ts->fw_ver;
 	nvt_pid = ts->nvt_pid;
 
-	/* Parsing criteria from dts */
-	if(of_property_read_bool(np, "novatek,mp-support-dt")) {
+	/* dash stock loads CSV after reading the MP firmware's PID. */
+	if (IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)) {
+		if (nvt_load_mp_setting_criteria_from_csv() < 0) {
+			NVT_ERR("CSV criteria load failed; keep current criteria\n");
+			nvt_print_criteria();
+		}
+	} else if (of_property_read_bool(np, "novatek,mp-support-dt")) {
 		/*
 		 * Parsing Criteria by Novatek PID
 		 * The string rule is "novatek-mp-criteria-<nvt_pid>"
@@ -3063,8 +3266,13 @@ static int32_t hq_selftest_open(struct inode *inode, struct file *file)
 	fw_ver = ts->fw_ver;
 	nvt_pid = ts->nvt_pid;
 
-	/* Parsing criteria from dts */
-	if(of_property_read_bool(np, "novatek,mp-support-dt")) {
+	/* dash stock loads CSV after reading the MP firmware's PID. */
+	if (IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)) {
+		if (nvt_load_mp_setting_criteria_from_csv() < 0) {
+			NVT_ERR("CSV criteria load failed; keep current criteria\n");
+			nvt_print_criteria();
+		}
+	} else if (of_property_read_bool(np, "novatek,mp-support-dt")) {
 		/*
 		 * Parsing Criteria by Novatek PID
 		 * The string rule is "novatek-mp-criteria-<nvt_pid>"
@@ -3807,8 +4015,13 @@ int nvt_factory_open_test(void){
 	fw_ver = ts->fw_ver;
 	nvt_pid = ts->nvt_pid;
 
-	/* Parsing criteria from dts */
-	if(of_property_read_bool(np, "novatek,mp-support-dt")) {
+	/* dash stock loads CSV after reading the MP firmware's PID. */
+	if (IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)) {
+		if (nvt_load_mp_setting_criteria_from_csv() < 0) {
+			NVT_ERR("CSV criteria load failed; keep current criteria\n");
+			nvt_print_criteria();
+		}
+	} else if (of_property_read_bool(np, "novatek,mp-support-dt")) {
 		/*
 		 * Parsing Criteria by Novatek PID
 		 * The string rule is "novatek-mp-criteria-<nvt_pid>"
@@ -3959,8 +4172,13 @@ int nvt_factory_short_test(void){
 	fw_ver = ts->fw_ver;
 	nvt_pid = ts->nvt_pid;
 
-	/* Parsing criteria from dts */
-	if(of_property_read_bool(np, "novatek,mp-support-dt")) {
+	/* dash stock loads CSV after reading the MP firmware's PID. */
+	if (IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)) {
+		if (nvt_load_mp_setting_criteria_from_csv() < 0) {
+			NVT_ERR("CSV criteria load failed; keep current criteria\n");
+			nvt_print_criteria();
+		}
+	} else if (of_property_read_bool(np, "novatek,mp-support-dt")) {
 		/*
 		 * Parsing Criteria by Novatek PID
 		 * The string rule is "novatek-mp-criteria-<nvt_pid>"
