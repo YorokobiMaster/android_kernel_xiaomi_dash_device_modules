@@ -4078,9 +4078,18 @@ static void charger_power_supply_work(struct work_struct *work)
 /*P16 code for BUGP16-3227 by p-liaoxianguo at 2025/6/4 start*/
 	if (charge_status != ts_data->charger_status || ts_data->charger_status <0) {
 		ts_data->charger_status = charge_status;
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+		add_common_data_to_buf(0, SET_CUR_VALUE, THP_HAL_CHARGING_STATUS,
+				      1, &charge_status);
+#endif
 		mutex_lock(&ts->lock);
 		ts->charger_status_store = ts_data->charger_status;
-		nvt_set_charger_switch(ts_data->charger_status);
+		if (bTouchIsAwake == 1 && !READ_ONCE(ts_data->firmware_loading) &&
+		    !ts_data->nvt_tool_in_use) {
+			command[1] = charge_status ? 0x53 : 0x51;
+			if (CTP_SPI_WRITE(ts_data->client, command, sizeof(command)))
+				NVT_ERR("charger state write failed\n");
+		}
 		NVT_LOG("nvt charger mode is %d\n",ts_data->charger_status);
 		mutex_unlock(&ts->lock);
 	}
