@@ -262,6 +262,13 @@ struct xiaomi_touch_panel_data {
 	struct workqueue_struct *pm_wq;
 	struct work_struct resume_work;
 	struct mutex pm_lock;
+	struct mutex proc_lock;
+	struct proc_dir_entry *info_proc[3];
+	char info_result[320];
+	size_t info_result_len;
+	char hal_version[128];
+	char limit_version[30];
+	int self_test_result;
 	struct task_struct *temp_thread;
 	wait_queue_head_t temp_wait;
 	bool temp_enabled;
@@ -293,6 +300,7 @@ extern int register_touch_panel_common(struct device *dev, int touch_id,
 		const hardware_param_t *hardware_param,
 		const hardware_operation_t *hardware_operation);
 extern void unregister_touch_panel_common(int touch_id);
+extern void xiaomi_touch_remove_info_proc_common(int touch_id);
 extern int get_bms_temp_common(void);
 extern void enable_temperature_detection_func(bool enable);
 extern void stop_temperature_detection_func(void);

@@ -232,10 +232,10 @@ typedef struct common_data {
 	s32 data_buf[CMD_DATA_BUF_SIZE];
 } common_data_t;
 typedef struct hardware_operation {
-	void (*self_test)(void);
+	int (*self_test)(const char *command, int *result);
 	void (*reserved_08)(void);
-	void (*lockdown_info_read)(void);
-	void (*get_fw_version)(void);
+	int (*lockdown_info_read)(u8 *info);
+	int (*get_fw_version)(char *version);
 	int (*set_cur_value)(int mode, int *values);
 	void (*reserved_28[3])(void);
 	void (*switch_mode)(void);
@@ -254,7 +254,7 @@ typedef struct hardware_operation {
 	int (*htc_ic_get_mode_value)(common_data_t *data);
 	int (*resume_suspend)(int resume, int gesture_type);
 	void (*set_charge_state)(void);
-	void (*limit_version_read)(void);
+	int (*limit_version_read)(char *version);
 	void (*reserved_d0)(void);
 	void (*fod_test)(int value);
 	void (*fod_attn_test)(int value);

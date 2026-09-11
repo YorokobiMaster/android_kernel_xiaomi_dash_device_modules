@@ -1575,12 +1575,14 @@ int32_t nvt_extra_proc_init(void)
 	}
 /*P16 code for BUGP16-8418 by xiongdejun at 2025/7/15 end*/
 /*P16 code for HQFEAT-89693 by xiongdejun at 2025/3/24 start*/
-	proc_tp_lockdown_info_entry = proc_create(PROC_LOCKDOWN_INFO_FILE, 0444, NULL, &proc_tp_lockdown_info_fops);
-	if (proc_tp_lockdown_info_entry == NULL) {
-		NVT_ERR("create proc/%s Failed!\n", PROC_LOCKDOWN_INFO_FILE);
-		return -ENOMEM;
-	} else {
-		NVT_LOG("create proc/%s Succeeded!\n", PROC_LOCKDOWN_INFO_FILE);
+	if (!IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)) {
+		proc_tp_lockdown_info_entry = proc_create(PROC_LOCKDOWN_INFO_FILE, 0444, NULL, &proc_tp_lockdown_info_fops);
+		if (proc_tp_lockdown_info_entry == NULL) {
+			NVT_ERR("create proc/%s Failed!\n", PROC_LOCKDOWN_INFO_FILE);
+			return -ENOMEM;
+		} else {
+			NVT_LOG("create proc/%s Succeeded!\n", PROC_LOCKDOWN_INFO_FILE);
+		}
 	}
 /*P16 code for HQFEAT-89693 by xiongdejun at 2025/3/24 end*/
 /*P16 code for HQFEAT-89815 by liaoxianguo at 2025/4/1 start*/
@@ -1629,11 +1631,13 @@ NVT_proc_pocket_palm_switch_entry = proc_create(NVT_POCKET_PALM_SWITCH, 0666, NU
 	}
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 end */
 /*P16 code for HQFEAT-89698 by xiongdejun at 2025/4/23 start*/
-	nvt_proc_tp_selftest_entry = proc_create(NVT_TP_SELFTEST, (S_IWUSR | S_IRUGO), NULL, &aftersale_test_ops);
-	if (nvt_proc_tp_selftest_entry == NULL){
-		NVT_ERR("proc/%s create failed!\n", NVT_TP_SELFTEST);
-	} else {
-		NVT_LOG("proc/%s create success!\n",NVT_TP_SELFTEST);
+	if (!IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)) {
+		nvt_proc_tp_selftest_entry = proc_create(NVT_TP_SELFTEST, (S_IWUSR | S_IRUGO), NULL, &aftersale_test_ops);
+		if (nvt_proc_tp_selftest_entry == NULL) {
+			NVT_ERR("proc/%s create failed!\n", NVT_TP_SELFTEST);
+		} else {
+			NVT_LOG("proc/%s create success!\n", NVT_TP_SELFTEST);
+		}
 	}
 /*P16 code for HQFEAT-89698 by xiongdejun at 2025/4/23 end*/
 /* P16 code for HQFEAT-89782 by p-zhangyundan at 2025/4/30 start */

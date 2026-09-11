@@ -234,6 +234,7 @@ struct nvt_ts_data {
 	bool palm_sensor_switch;
 /*P16 code for HQFEAT-89815 by liaoxianguo at 2025/4/1 end*/
 	uint8_t fw_ver;
+	uint8_t fw_type;
 	uint8_t x_num;
 	uint8_t y_num;
 	uint16_t abs_x_max;
@@ -466,6 +467,8 @@ int32_t nvt_set_pocket_palm_switch(uint8_t pocket_palm_switch);
 int32_t nvt_update_firmware(char *firmware_name, uint8_t skip_update_ilm);
 int32_t nvt_check_fw_reset_state(RST_COMPLETE_STATE check_reset_state);
 int32_t nvt_get_fw_info(void);
+int nvt_factory_short_test(void);
+int nvt_factory_open_test(void);
 int32_t nvt_get_xm_htc_poll_info(void);
 int32_t nvt_clear_fw_status(void);
 int32_t nvt_check_fw_status(void);

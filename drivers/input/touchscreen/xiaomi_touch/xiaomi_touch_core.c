@@ -340,6 +340,127 @@ void netlink_exit(void)
 	mi_ts_info("self module exited\n");
 }
 
+static void xiaomi_touch_format_info(struct xiaomi_touch_panel_data *panel,
+				     const char *name)
+{
+	hardware_operation_t *ops = &panel->hardware_operation;
+	hardware_param_t *param = &panel->hardware_param;
+	char *buf = panel->info_result;
+	size_t size = sizeof(panel->info_result);
+	int len = 0;
+	int i;
+
+	if (!strncmp(name, "tp_fw_version", 13)) {
+		if (ops->get_fw_version)
+			ops->get_fw_version(param->fw_version);
+		len = snprintf(buf, size, "fw version: %s\ndriver version: %s\nhal version: %s\n"
+			   "xiaomi-touch version: %s\n", param->fw_version,
+			   param->driver_version, panel->hal_version, "2025.04.30-01");
+		/* The CSV-backed limit callback remains absent until A42. */
+		if (ops->limit_version_read) {
+			ops->limit_version_read(panel->limit_version);
+			len += snprintf(buf + len, size - len, "limit csv version: %s\n",
+					panel->limit_version);
+		}
+	} else if (!strncmp(name, "tp_lockdown_info", 16)) {
+		if (ops->lockdown_info_read) {
+			ops->lockdown_info_read(param->lockdown_info);
+			for (i = 0; i < ARRAY_SIZE(param->lockdown_info); i++)
+				len += snprintf(buf + len, size - len, "0x%02X%s", param->lockdown_info[i],
+					   i == 7 ? "\n" : ",");
+		} else {
+			len = snprintf(buf, size, "null");
+		}
+	} else {
+		len = snprintf(buf, size, "%d\n", panel->self_test_result);
+	}
+	panel->info_result_len = len;
+}
+
+static ssize_t xiaomi_touch_info_read(struct file *file, char __user *buf,
+				      size_t count, loff_t *pos)
+{
+	struct xiaomi_touch_panel_data *panel = pde_data(file_inode(file));
+	ssize_t ret;
+
+	mutex_lock(&panel->proc_lock);
+	/* Stock shares the result buffer across info nodes on one panel. */
+	if (!*pos)
+		xiaomi_touch_format_info(panel, file->f_path.dentry->d_name.name);
+	ret = simple_read_from_buffer(buf, count, pos, panel->info_result,
+				      panel->info_result_len);
+	mutex_unlock(&panel->proc_lock);
+	return ret;
+}
+
+static ssize_t xiaomi_touch_info_write(struct file *file, const char __user *buf,
+				       size_t count, loff_t *pos)
+{
+	struct xiaomi_touch_panel_data *panel = pde_data(file_inode(file));
+	const char *name = file->f_path.dentry->d_name.name;
+	char command[64] = { 0 };
+	int retry;
+	ssize_t ret = count;
+
+	mutex_lock(&panel->proc_lock);
+	if (!strncmp(name, "tp_fw_version", 13)) {
+		memset(panel->hal_version, 0, sizeof(panel->hal_version));
+		if (copy_from_user(panel->hal_version, buf,
+				   min(count, sizeof(panel->hal_version) - 1)))
+			ret = -EFAULT;
+	} else if (!strncmp(name, "tp_selftest", 11)) {
+		if (copy_from_user(command, buf, min(count, sizeof(command) - 1))) {
+			ret = -EFAULT;
+			goto out;
+		}
+		if (panel->hardware_operation.self_test) {
+			/* Stock calls once, then performs up to five checked attempts. */
+			panel->hardware_operation.self_test(command, &panel->self_test_result);
+			for (retry = 0; retry < 5; retry++) {
+				panel->hardware_operation.self_test(command, &panel->self_test_result);
+				if (panel->self_test_result == 2)
+					break;
+			}
+		}
+	}
+out:
+	mutex_unlock(&panel->proc_lock);
+	return ret;
+}
+
+static const struct proc_ops xiaomi_touch_info_ops = {
+	.proc_read = xiaomi_touch_info_read,
+	.proc_write = xiaomi_touch_info_write,
+	.proc_lseek = default_llseek,
+};
+
+static int xiaomi_touch_create_info_proc(struct xiaomi_touch_panel_data *panel,
+				       int touch_id)
+{
+	static const char * const names[] = {
+		"tp_fw_version", "tp_lockdown_info", "tp_selftest",
+	};
+	char name[64];
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(names); i++) {
+		if (touch_id)
+			snprintf(name, sizeof(name), "%s_%d", names[i], touch_id);
+		else
+			strscpy(name, names[i], sizeof(name));
+		panel->info_proc[i] = proc_create_data(name, 0644, NULL,
+						     &xiaomi_touch_info_ops, panel);
+		if (!panel->info_proc[i]) {
+			while (i--) {
+				proc_remove(panel->info_proc[i]);
+				panel->info_proc[i] = NULL;
+			}
+			return -ENOMEM;
+		}
+	}
+	return 0;
+}
+
 int register_touch_panel_common(struct device *dev, int touch_id,
 		const hardware_param_t *hardware_param,
 		const hardware_operation_t *hardware_operation)
@@ -398,9 +519,18 @@ int register_touch_panel_common(struct device *dev, int touch_id,
 	spin_lock_init(&panel->client_lock);
 	mutex_init(&panel->common_data_lock);
 	mutex_init(&panel->pm_lock);
+	mutex_init(&panel->proc_lock);
+	memset(panel->hal_version, 0, sizeof(panel->hal_version));
+	memset(panel->limit_version, 0, sizeof(panel->limit_version));
+	panel->info_result_len = 0;
+	panel->self_test_result = 0;
 	panel->registered = true;
 	init_waitqueue_head(&panel->temp_wait);
 	panel->temp_enabled = true;
+	if (xiaomi_touch_create_info_proc(panel, touch_id)) {
+		unregister_touch_panel_common(touch_id);
+		return -ENOMEM;
+	}
 	if (touch_id == 0 && panel->hardware_operation.set_thermal_temp) {
 		panel->temp_thread = kthread_run(xiaomi_touch_temp_thread_func,
 					       panel, "xiaomi_touch_temp_thread");
@@ -417,6 +547,21 @@ int register_touch_panel_common(struct device *dev, int touch_id,
 }
 EXPORT_SYMBOL_GPL(register_touch_panel_common);
 
+void xiaomi_touch_remove_info_proc_common(int touch_id)
+{
+	struct xiaomi_touch_panel_data *panel;
+	int i;
+
+	if (touch_id < 0 || touch_id >= XIAOMI_TOUCH_MAX_PANEL)
+		return;
+	panel = &touch_panel_data[touch_id];
+	for (i = 0; i < ARRAY_SIZE(panel->info_proc); i++) {
+		proc_remove(panel->info_proc[i]);
+		panel->info_proc[i] = NULL;
+	}
+}
+EXPORT_SYMBOL_GPL(xiaomi_touch_remove_info_proc_common);
+
 void unregister_touch_panel_common(int touch_id)
 {
 	struct xiaomi_touch_panel_data *panel;
@@ -430,6 +575,7 @@ void unregister_touch_panel_common(int touch_id)
 	panel = &touch_panel_data[touch_id];
 	if (!panel->registered)
 		return;
+	xiaomi_touch_remove_info_proc_common(touch_id);
 	xiaomi_unregister_panel_notifier_common(touch_id);
 	if (touch_id == 0)
 		stop_temperature_detection_func();

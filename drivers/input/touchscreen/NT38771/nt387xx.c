@@ -945,6 +945,7 @@ info_retry:
 		}
 	}
 	ts->fw_ver = buf[1];
+	ts->fw_type = buf[14];
 	ts->x_num = buf[3];
 	ts->y_num = buf[4];
 	ts->query_config_ver = (uint16_t)((buf[20] << 8) | buf[19]);
@@ -3968,7 +3969,58 @@ static int nvt_touch_doze_analysis(int value)
 	return -1;
 }
 
+static int nvt_ic_self_test(const char *command, int *result)
+{
+	int ret;
+
+	if (!ts)
+		return -EIO;
+	if (!strncmp(command, "short", 5)) {
+		ret = nvt_factory_short_test();
+#if IS_ENABLED(CONFIG_MIEV)
+		if (ret)
+			xiaomi_touch_mievent_report_int(TOUCH_EVENT_SHORTTEST_FAIL,
+				0, "TpShortestFail", "novatek", 0);
+#endif
+	} else if (!strncmp(command, "open", 4)) {
+		ret = nvt_factory_open_test();
+#if IS_ENABLED(CONFIG_MIEV)
+		if (ret)
+			xiaomi_touch_mievent_report_int(TOUCH_EVENT_OPENTEST_FAIL,
+				0, "TpOpentestFail", "novatek", 0);
+#endif
+	} else if (!strncmp(command, "i2c", 3)) {
+		/* Stock names the FW-info check "i2c" on this SPI device. */
+		ret = nvt_get_fw_info();
+	} else {
+		ret = -EINVAL;
+	}
+	*result = ret ? 1 : 2;
+	return 0;
+}
+
+static int nvt_ic_lockdown_info_read(u8 *info)
+{
+	int ret = nvt_lockdown_info_read();
+
+	if (!ret)
+		memcpy(info, ts->lockdown, sizeof(ts->lockdown));
+	return ret;
+}
+
+static int nvt_ic_get_fw_version(char *version)
+{
+	if (nvt_get_fw_info())
+		return -EAGAIN;
+	snprintf(version, 64, "fw_ver:0x%02X  fw_type:0x%02X  nvt_pid:0x%04X\n",
+		 ts->fw_ver, ts->fw_type, ts->nvt_pid);
+	return 0;
+}
+
 static const hardware_operation_t nvt_hardware_operation = {
+	.self_test = nvt_ic_self_test,
+	.lockdown_info_read = nvt_ic_lockdown_info_read,
+	.get_fw_version = nvt_ic_get_fw_version,
 	.set_cur_value = nvt_set_thp_cur_value,
 	.enable_touch_raw = nvt_enable_touch_raw,
 	.touch_doze_analysis = nvt_touch_doze_analysis,
@@ -4795,6 +4847,9 @@ err_register_mtk_drm_failed:
 #endif
 /*P16 code for HQFEAT-94432 by liaoxianguo at 2025/3/27 end*/
 err_register_touch_panel_common_failed:
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	xiaomi_touch_remove_info_proc_common(0);
+#endif
 #if NVT_TOUCH_MP
 	nvt_mp_proc_deinit();
 err_mp_proc_init_failed:
@@ -4943,6 +4998,7 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 {
 	NVT_LOG("Removing driver...\n");
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	xiaomi_touch_remove_info_proc_common(0);
 	stop_temperature_detection_func();
 #endif
 /* P16 code for HQFEAT-90108 by liuyupei at 2025/4/1 start */
@@ -5070,6 +5126,7 @@ static void nvt_ts_shutdown(struct spi_device *client)
 {
 	NVT_LOG("Shutdown driver...\n");
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_COMMON)
+	xiaomi_touch_remove_info_proc_common(0);
 	stop_temperature_detection_func();
 #endif
 
