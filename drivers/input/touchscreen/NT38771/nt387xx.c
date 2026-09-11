@@ -3585,17 +3585,47 @@ static int nvt_reset_mode(int mode)
 
 static int nvt_thp_ic_set_mode(common_data_t *data)
 {
-	char value_buf[CMD_DATA_BUF_SIZE + 1];
+	const uint8_t *input = (const uint8_t *)data->data_buf;
+	uint8_t raw[CMD_DATA_BUF_SIZE] = { 0 };
 	unsigned int value = 0;
+	unsigned int i, index = 0;
+	bool digit = false;
 	uint8_t command = 0;
 	int ret;
 
 	if (!ts)
 		return -ENODEV;
-	if (data->mode <= THP_IC_CMD_BASE || data->mode > SET_OPEN_TRANSPORT_MODE)
-		return -EOPNOTSUPP;
-	if (data->mode == SET_OPEN_TRANSPORT_MODE)
-		return -EOPNOTSUPP;
+	if (data->mode < THP_IC_CMD_BASE)
+		return -1;
+	if (data->mode == THP_IC_CMD_BASE || data->mode > SET_OPEN_TRANSPORT_MODE)
+		return 0;
+	if (ts->nvt_tool_in_use)
+		return -EBUSY;
+	if (data->data_len > sizeof(raw))
+		return -EINVAL;
+
+	if (data->mode == SET_OPEN_TRANSPORT_MODE) {
+		for (i = 0; i < sizeof(data->data_buf) && input[i]; i++) {
+			if (input[i] >= '0' && input[i] <= '9') {
+				if (index >= sizeof(raw))
+					return -EINVAL;
+				value = raw[index] * 10 + input[i] - '0';
+				raw[index] = min(value, 255U);
+				digit = true;
+			} else if (input[i] == ',' || input[i] == ' ') {
+				index += digit;
+				digit = false;
+			} else {
+				break;
+			}
+		}
+		mutex_lock(&ts->lock);
+		/* Stock ignores page-write failure and uses the requested length. */
+		nvt_set_page(ts->mmap->EVENT_BUF_ADDR);
+		ret = CTP_SPI_WRITE(ts->client, raw, data->data_len);
+		mutex_unlock(&ts->lock);
+		return ret;
+	}
 
 	switch (data->mode) {
 	case SET_IDLE_THD:
@@ -3636,42 +3666,43 @@ static int nvt_thp_ic_set_mode(common_data_t *data)
 		break;
 	}
 
-	if (data->data_len) {
-		memcpy(value_buf, data->data_buf, data->data_len);
-		value_buf[data->data_len] = '\0';
-		ret = kstrtouint(value_buf, 10, &value);
-		if (ret)
-			return ret;
+	/* Stock consumes a decimal prefix, then truncates to the command width. */
+	for (i = 0; i < sizeof(data->data_buf); i++) {
+		if (input[i] < '0' || input[i] > '9')
+			break;
+		value = value * 10 + input[i] - '0';
 	}
 
 	mutex_lock(&ts->lock);
-	ret = nvt_set_extend_custom_cmd(command, (uint16_t)value);
+	nvt_set_extend_custom_cmd(command, (uint16_t)value);
 	mutex_unlock(&ts->lock);
 
-	return ret;
+	return 1;
 }
 
 static int nvt_thp_ic_get_mode(common_data_t *data)
 {
 	uint8_t *buf = (uint8_t *)data->data_buf;
-	int ret;
+	unsigned int length;
 
 	if (!ts)
 		return -ENODEV;
-	if (data->mode <= THP_IC_CMD_BASE || data->mode > SET_OPEN_TRANSPORT_MODE)
-		return -EOPNOTSUPP;
-	if (data->mode == SET_OPEN_TRANSPORT_MODE)
-		return -EOPNOTSUPP;
+	if (data->mode < THP_IC_CMD_BASE)
+		return -1;
+	if (data->mode == THP_IC_CMD_BASE || data->mode > SET_OPEN_TRANSPORT_MODE)
+		return 0;
 	if (ts->nvt_tool_in_use)
-		return -EBUSY;
+		return 0;
+	length = data->mode == SET_OPEN_TRANSPORT_MODE ? data->data_len : 2;
+	if (length > CMD_DATA_BUF_SIZE)
+		return -EINVAL;
 
 	mutex_lock(&ts->lock);
-	ret = nvt_set_page(ts->mmap->EVENT_BUF_ADDR);
-	if (!ret)
-		ret = CTP_SPI_READ(ts->client, buf, 2);
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR);
+	CTP_SPI_READ(ts->client, buf, length);
 	mutex_unlock(&ts->lock);
 
-	return ret;
+	return 0;
 }
 
 static int nvt_xm_htc_set_fod_attn_status(uint16_t status)
