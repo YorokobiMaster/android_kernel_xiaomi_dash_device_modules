@@ -4733,9 +4733,6 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	current_super_resolution = 1;
 #endif
 /*P16 code for BUGP16-6610 by P-liaoxianguo at 2025/6/24 end*/
-/*P16 code for HQFEAT-89614 by liaoxianguo at 2025/4/3 start*/
-	mi_display_gesture_callback_register(mi_display_gesture_callback);
-/*P16 code for HQFEAT-89614 by liaoxianguo at 2025/4/3 end*/
 
 	NVT_LOG("end\n");
 
